@@ -1,0 +1,2506 @@
+#!bin/bash
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#Script to regroup data from raw Silviscan files into files for import in TreeSource
+#Sébastien Clément, 6/05/2010
+script_version="2018-09-13"
+test=0
+
+#------------------------
+#BASIC VARIABLES
+#------------------------
+	#Limits
+		#min_nb_of_reads_per_ring=5		#Minimal number of reads allowed per ring (29/5/2018).		IF below		---> ring in invalid_rings, transition = \N, warning  	***NOT USED FOR NOW
+		min_nb_of_reads_for_transition=10	#Minimal number of reads to calculate the transition. 		If below		---> transition = \N, warning					
+		#min_nb_of_ew_reads=5			#Minimal number of earlywood reads. 					If below		---> transition = \N, warning					***NOT USED FOR NOW
+		#min_nb_of_lw_reads=5			#Minimal number of latewood reads. 					If below		---> transition = \N, warning					***NOT USED FOR NOW
+		
+		max_pct_lw_per_ring=40			#Maximal proportion of latewood reads. 					If above 		---> warning.
+		limit_ring_width_factor=3			#Factor by which the sample median ring width is mulitplied/divided to give a max/min limit of ring width before triggering a warning
+									#											If above/below	---> warning.
+									#Example: median ring width = 3, min_width=1, max width=9
+		
+	#Minimal and maximal density values allowed when calculating min, max, average, mid-range and median density
+	#NOTES:
+	#	- For real SilviScan statistics, see: "P:\___0TreeSource\___0Requetes_utilisateurs\20180529_(TODO)_density_range_per_species"
+	#	- COULD BE MADE SPECIES-SPECIFIC IF NEEDED, WITH A PARAMETERS FILE
+		min_allowed_density=100
+		max_allowed_density=2000
+
+	#Step between reads, in millimeters (NEW: 31/5/2018)
+		step=0.025
+
+
+	#Ring numbering method (13/6/2018) - NO LONGER USED, HAS BEEN SPLIT INTO ring_numbering_method_p2b and ring_numbering_method_b2p.
+	#1. use pith-to-bark and bark-to-pith numbers provided in the *_ring_info.file.
+	#2. use auto-incremented (pith-to-bark) and auto-decremented ring numbers.
+	#ring_numbering_method=1
+
+	#Ring numbering method from PITH to bark (21/6/2018)
+	#1. use pith-to-bark numbers (RingAge) provided in the *_ring_info.file.
+	#2. use auto-incremented numbering (1, 2, ...)
+	ring_numbering_method_p2b=1
+
+	#Ring numbering method from BARK to pith (21/6/2018)
+	#1. use bark-to-pith numbers (RingShell) provided in the *_ring_info.file.
+	#2. use auto-decremented (16, 15, ...) Note: last ring will have number=0 if it is the last ring and it is incomplete.
+	ring_numbering_method_b2p=2
+
+
+	#EW/LW transition method
+	#Transition density obtained from one of the methods below:
+	#1. Mid-range value method - DEFAULT
+	#2. Median value method
+	ewlw_transition_method=1
+
+	#Transition to choose when multiple transitions are found
+	#1. Keep the last encountered (closest to bark end) - DEFAULT
+	#2. Keep the first (closest to pith end)
+	multiple_transitions_option=1
+
+	#New: 11/6/2018
+	#Status of the last ring on the bark side:
+	#	This ring is usually considered as incomplete even if sample was harvested once growing season is over, for the following reasons:
+	#	1. Parts of the ring may have broken away with the bark removal prior to SilviScan analysis
+	#	2. Some of the last reads may have been removed post-SilviScan to reduce background noise.
+	#
+	#The script detects the last ring as follows:
+	#	1. Extra reads at the end of *_wood_properties.csv file that are not part of the last ring in *_ring_info.csv.
+	#		---> these extra reads are ALWAYS considered as an INCOMPLETE ring	
+	#		Notes: 
+	#		- These cases are seen only in datasets obtained prior to 2008.
+	#		- These extra reads are always kept in TreeSource.
+	#	2. Last ring in *_ring_info.csv file when no extra reads occur
+	#		---> this last ring will be considered INCOMPLETE ONLY if last_ring_is_incomplete=1.
+	#	Note: RingShell=0 is no longer used to detect the completeness of the ring, because it is not always there.
+	last_ring_is_incomplete=1	#1. incomplete (DEFAULT) 	2. complete
+	#
+	#Consequences of an incomplete last ring:
+	#	1.That ring will receive the following number (WHEN AUTOMATED):
+	#		pith_to_bark (RingAge): *_ring_info.csv's last ring number + 1
+	#		bark to pith (RingShell): 0
+	#	2. Transition will be set to \N for that ring.
+	#	3. The ring will be added to the incomplete_rings table.
+	#
+
+	#New: 13/9/2018
+	#When the last ring in *_ring_info.csv files is a "false ring" of 0 width, only there to mark the boundary of the real last ring (previous one)...
+	#...to allow the latter to be included into the *_properties_ring_stats.csv calculations, which usually exclude the last ring.
+	#The *_properties.csv files doesn't have any modifications in these cases.
+	#This is a SPECIAL PROTOCOL, used occasionally for some specific datasets. It is not sample-specific, and applies to the whole dataset. Example: FPI05 from Tessie Tong.
+	#Setting last_ring_is_false_ring to 2 will remove the false ring from the ring info file, hence it will not be analyzed or incorporated in the final data...
+	#...and the real last, incomplete ring will have the ring number bark to pith = 0
+	last_ring_is_false_ring=1	#1. no (DEFAULT)	2. yes
+	#******************************
+
+	#New: 13/9/2018
+	#First ring is the pith.
+	#In some instances, the pith is included, and represents the first ring. Hence, position 0 = center of the pith.
+	#This is a SPECIAL PROTOCOL, used occasionally for some specific datasets. It is not sample-specific, and applies to the whole dataset. Example: FPI05 from Tessie Tong.
+	#Setting first_ring_is_the_pith to 2 will NOT exclude the pith from the data, but will simply give it the ring number (pith to bark) = 0.
+	#	It will also turn the ring numbering (pith to bark) method to automatic (ring_numbering_method_p2b=2)
+	first_ring_is_the_pith=1	#1. no (DEFAULT)	2. yes
+	#*****************************
+	#Change the ring numbering method (pith to bark) to automatic.
+	if [ ${first_ring_is_the_pith} -eq 2 ]
+	then
+		ring_numbering_method_p2b=2
+	fi
+
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+
+#Modifications:
+	#12/7/2010: Removed grep commands with the -P option
+	#/13/7/2010: Remove single spaces from properties files (see line#167 & 174)
+	#15/7/2010: Added the automated calculation of early and latewood
+	#16/7/2010: Corrected improper removal of decimal point and trailing 0's in densities, causing erraneous calculations of min/max (lines #244, 247,248), and comparisons of densities (lines #360 & 368)
+	#19/7/2010: Added line numbers into temporary files used for the determination of transition between early and latewood (line #258). Theses line #'s are not used in the calculation for now.
+	#19/7/2010: Added a variable to count the total number of rings (nb_of_rings)
+	#19/7/2010: Ring number (ring_no_ptb, ring_no_ptb) is no longer read into the *_ring_info.csv file, but rather incremented/decremented from the number of lines of that file. See Maurice Defo explaination on this (MauriceDefo20100116.msg). This behaviour can be changed (see lines #226-235).
+	#19/7/2010: Took into account the possibility that no transition between and early wood would be found. In that case, a "\N" value is put in that field.
+	#20/7/2010: Added final files consistency check
+	#25/11/2010: Correction to have a single output file at the end
+	#26/11/2010: Transition is now omitted (\N) when ring bumber (bark to pith) = 0 (incomplete last ring)
+	#21/12/2010: 
+			#A) Ring number (from pith to bark or bark to pith) is now based on numbers in the Ring Info files, rather than being automatically incremented.
+				#This way, the last, incomplete ring = 0 (from bark to pith).
+				#Previously, no numbers were assigned to the last, incomplete rings.
+			#B) Generates a list of incomplete rings: 'incomplete_rings.txt'
+			#C) Can be used in 2 ways (see usage below)
+	#30/12/2010: Corrected incomplete_rings.txt output to include data_source_id, comments, and employee_id
+	#10/6/2011: 	#A. Corrected erraneous incomplete_rings.txt file production
+				#B. Transition is now calculated only if there is a minimum number of reads for a given ring
+	#23/6/2011:	#The program now checks if file (wood properties and ring info) headers are those expected
+				#It also verifies that headers are the same for all files
+
+	#17/2/2012:	Now automatically creates an index column to the properties file if it doesn't exist. Not required anymore for the ring_info files.
+	#			Automatically determines each column's position in the original files (both wood properties and ring info files) and reorders them for the final file
+	#			Also checks for the presence of required columns (e.g. Position and Density for wood properties; DataIdx, RingShell, RingAge for ring info)
+	#			Generates psql script for import
+	#20/2/2012:	Now puts a value of "-" for min, max, median density nor transition point when last ring is incomplete or made of too few reads. Previously, these variables kept the values of the previous ring when printed out in the report.
+	#6/11/2013:		replaces germplasm_name with germplasm_id in field names of psql commands and elsewhere.
+	#			Now logs all onscreen text while executing
+	#7/11/2013:		Small correction of the field separator (now $'\t') in the join at line 938
+	#			Now, the sort for comparing all headers is case insensitive
+	#			Logging fix.
+	
+	#4/3/2016:		Added -a option to all grep commands to avoid the false "Binary file" error.
+	#7/3/2016:		
+	#				***Transition density***: NOW MEDIAN, NO LONGER MID-RANGE (min+max)/2.
+	#					Correction of a major error: median density is now truly a median, no longer a (min+max)/2!
+	#9/3/2016:		Now offers the option to specify if last ring is complete or not (last_ring_is_complete="y" or "n"). Default: assumed incomplete
+	#10/3/2016:		Additional comparison of original property files and final ss_out.file
+	#			Error codes at end ring analyses are explained only when they occur.
+	
+	#31/5/2016		Now makes sure wood property files have their matching ring info files
+	#			Also checks the sample names derived from filenames against the 
+	
+	#4/1/2018
+	#			When saving the headers (lines ~ 448+), also replaces tabs, just to account for already tab-separated files.
+	
+	#5/1/2018
+	#			Now fills any reads at the bark end (bottom of properties file) which are not part of any ring in the ring info file...
+	#			...with nb_or_rings+1 as ring_pith_to_bark, 0 as ring_bark_to_pith, and \N as transition.
+	
+	
+	#8/1/2018
+	#			For the whole sample, now checks if there are replicated or missing indexes.
+	#			For each ring, when extracting the lines specified by the first and last index:
+	#				starting line: gets line where the first index found that is >= first index (from ring info file)
+	#				ending line: gets line where the last index found that is <= last index (from ring info file)
+	#				This avoids problems when there are missing indexes (reads) in the wood properties file, exactly where the beginning or ending of a ring occurs.
+	#			Corrected check #2 (line ~ 1417) in analysis of consistence between the original and the final file.
+	#
+
+	#9/1/2018
+	#			Now copies the script, required files, and sample list to the final files folder.
+
+
+
+	#29/5/2018
+	#	sample_names.txt ($out_samplenames_file), which listed all analyzed samples, along with messages (spaces in the file, missing indexes) is dropped.
+	#		It is replaced by sample_errors.txt, logging 1 line for each whole sample error.
+	#		The list of samples can be obtained otherwise by all_ri_samples.txt and all_wp_samples.txt.
+	
+	#	MAJOR ERROR correction: before 29/5/2018, the median density was obtained form an UNSORTED list of densities for any given ring...
+	#		...possibly giving a completely false median value.
+		
+	#	Addition of minimal (min_allowed_density=100) and maximal (max_allowed_density=2000) density boundaries
+	#
+	#	Removal of empty density values or density values beyond min/max before calculating density statistics: min, max, average, median
+	
+	
+	#31/5/2018
+	#	Addition of the step (0.025) of the reads
+	#
+	#	Check of positions: order, replicates, missing
+		
+	#	Allows the choice of EW/LW transition method (ewlw_transition_method):
+	#		1. Mid-range value method
+	#		2. Median value method
+	#		
+	#	Allows to choose which transition point to keep when there are several found, with the multiple_transitions_option variable.
+	#		1. Keep the last encountered (closest to bark end) - DEFAULT
+	#		2. Keep the first (closest to pith end)
+	
+
+
+	#1/6/2018
+	#	Now stores all error and warning files into ${temp_f}/${err_warn_f}/, typically /dev/shm/regroup_ss_data_tempfiles/errors_and_warnings/.
+	#
+	#	List of error/warning codes and descriptions are in a separate file, in regroup_ss_data_REQS.
+	#
+	#	Now uses a timestamp as prefix for final files and temporary files folders
+	#
+	#	sample_name.txt is now generated, exlusively for checks at the end of the script, using the all_ri_samples.txt and all_wp_samples.txt files
+	#
+	#	Calculates the % of LW in each ring after transition was calculated. If above max_pct_lw_per_ring, warn. 
+
+
+	#4/6/2018
+	#	Now uses a function (fnct_get_median_value) to obtain median values
+	#	Also calculates ring start/end positions, ring widths, and sample median ring width.
+	#	limit_ring_width_factor is now used to calculate lower (median width/factor) and higher (median width*factor) limits below/above which any ring width will trigger a warning message
+
+
+	#5/6/2018
+	#	Now regroups all error and warning codes for clearer & quicker stats view
+	#	last_ring_is_complete is no longer a parameter entered when executing the script, it lays instead with other parameters within the script.
+	#	ewlw_transition_method and multiple_transitions_option can now be passed as parameters when executing the script.
+	
+	#11/6/2018
+	#	last_ring_is_complete is replaced with last_ring_is_incomplete. 
+	#	It will be used (see 12/6/2018)to determine if it is incomplete, in case incompleteness could not be determined by extra reads in wp vs ri or RingShell = 0 in ri file.
+	
+	#12/6/2018
+	#	Now the last ring is considered incomplete when:
+	#	#1. There are extra reads in wp file compared to ri file. Those extra reads make the last, incomplete ring
+		#2. When ring is the last in ring info file and no extra reads are found in wp vs ri, and when:
+		#	2a. RingShell=0 in *_ring_info.csv file 									
+		#		OR
+		#	2b. last ring is considered incomplete by default (last_ring_is_incomplete=1)			
+	
+	#13/6/2018
+	#	The ring number for extra reads in the wp vs ri file now have the number added_ring_no_p2b=${ring_no_ptb}+1
+	#	Added the ring_numbering_method variable to choose ring number:
+	#		1. use pith-to-bark and bark-to-pith numbers provided in the *_ring_info.file.
+	#		2. use auto-incremented (pith-to-bark) and auto-decremented ring numbers.
+
+	#15/6/2018
+	#	Added new limits, but they ARE NOT YET ACTIVATED:
+	#		min_nb_of_ew_reads
+	#		min_nb_of_lw_reads
+
+	#21/6/2018
+	#	Slight correction in errors and warning summary
+	#	RingShell=0 is no longer used as an indicator of an incomplete last ring, because it is not present in all datasets.
+	#		Now: only extra reads in wp vs ri or last ring in ri file are considered as last rings.
+	#			- extra reads in wp are always considered as forming an incomplete ring
+	#			- when no extra reads in wp, last ring in ri is considered incomplete if last_ring_is_incomplete=1
+	#	ring_numbering_method is subdivided into
+	#		ring_numbering_method_p2b: 1 = from ri file; 2 = auto
+	#		ring_numbering_method_b2p: 1 = from ri file; 2 = auto
+	#			In that second case, when there are no extra reads and the last ring is considered incomplete (last_ring_is_incomplete=1)
+	#			...auto numbering will reach 0 for the last ring.
+	
+	#22/6/2018
+	#	Added the following command to remove spaces in headers prior to comparison (in wood properties and ring info files), to avoid false differences: perl -pe 's/ //g' 
+
+	#26/6/2018:
+	#	Correction to the section comparing all existing vs potential positions to dectect any missing or extra positions (lines ~1142 and +).
+
+	#27/6/2018:
+	#	error_and_warnings_summary.txt now goes directly into $final_files_folder.
+
+	#4/7/2018
+	#	Now doesn't calculate transition when number of clean density reads (nb_of_clean_dens_reads) is too low after outside-range density values  
+
+	#13/9/2018
+	#Added 2 new variables for special datasets:
+	#	- last_ring_is_false_ring: when set to 2, indicates that there is a false ring with a width of 0 in the *_ring_info.csv file.
+	#		This false ring was added by FPInnovations to force the SS3 software to make average calculations on the last, incomplete ring, which was otherwise excluded from the calculations.
+	#	- first_ring_is_the_pith: when set to 2, indicates that first ring encountered is actually the pith. These rings will stay in the results but have a ring_no_pith_to_bark  number = 0
+	#		- When this variable is set to 2, it automatically sets the ring numbering method (pith 2 bark) to automatic (ring_numbering_method_p2b=2)
+	#		- Also, these rings should be MANUALLY ADDED to invalid_rings.
+	#	These 2 variables are rarely being set to 2.
+	#	For now, only the dataset of project FPI05 uses them.
+
+	
+	
+#--------------------------------------------------------------------------------------------------------------------------------------------------
+#TODO:
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#20180604:
+#		- [DONE!] count the total samples first
+#		- [DONE!] check that each property file has its corresponding ring info file, and vice versa
+#		- when analyzing each sample, format the numbering before the sample name like this 004/163
+#		- put together all headers for property/ring info files before putting a single header line into a file. Right now, the header of the first file is chosen, and then compared with headers from other files.
+#		- [DONE] Deal with multiple transitions within a ring
+#		- [DONE] Add other checks (see lines ~ 907+) 
+#		- check if there are missing or disordered rings in the ring info file
+#			
+#--------------------------------------------------------------------------------------------------------------------------------------------------
+#Usage:
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#bash regroup_ss_data.txt data_source_id folder_to_analyze transition_method multiple_transitions_option
+	#data_source_id:					integer referring to the data source (e.g. 102)
+	#folder_to_analyze:					folder containing raw SilviScan files (.csv)
+	#ewlw_transition_method (OPTIONAL): 		1. Mid-range value method - DEFAULT	2. Median value method
+	#multiple_transitions_option (OPTIONAL):	1. Keep the last encountered (closest to bark end) - DEFAULT	2. Keep the first (closest to pith end)
+	#	For the last 2 parameters, if left blank, theur values will be defaulted as those set earlier in the script
+	
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#Requirements:
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+
+#(1) For each Silviscan sample:
+  #NOTE: these files must be COMMA-SEPARATED VALUES FILES. ANY SPACE THEY MAY CONTAIN WILL BE REMOVED.
+  # THUS, BE SURE THAT NO SAMPLE NAMES CONTAIN SPACES.
+    #A. Wood properties file, eg.: sample1_wood_010101_properties.csv
+        #Index   Position (mm)   Density (kg/m^3)        Radial diameter (¦m)    Tangential diameter (¦m)        Coarseness (¦g/m) Cell population (/mm^2) Ray angle (Deg) Isopycnic angle (Deg)   MFA (Deg)       DiffIntens CV   MOE (Gpa)Wall thickness (¦m)      Specific surface (m^2/kg)       Crystallite Width (nm)  Crystallinity
+        #0       0.000   570.    20.5    29.5    344.    1655.   16.1    28.6    30.3    0.185   7.2     2.56    290.    1.98      0.066
+        #1       0.025   567.    20.6    28.4    332.    1709.   16.0    28.6    30.3    0.185   7.2     2.52    295.    1.98      0.066
+        #2       0.050   577.    21.1    30.1    367.    1572.   16.0    28.6    30.3    0.185   7.2     2.66    279.    1.98      0.066
+        #3       0.075   587.    21.2    31.4    390.    1503.   16.0    28.5    30.3    0.185   7.2     2.76    270.    1.98      0.066
+        #4       0.100   595.    21.7    30.4    392.    1519.   15.9    28.5    30.3    0.185   7.2     2.81    266.    1.98      0.066
+        #5       0.125   597.    22.2    30.8    408.    1462.   15.9    28.4    30.3    0.185   7.2     2.88    260.    1.98      0.066
+        #6       0.150   600.    23.5    30.5    430.    1395.   15.8    28.4    30.3    0.185   7.2     2.98    251.    1.98      0.066
+        #7       0.175   577.    24.9    30.9    444.    1299.   15.8    28.3    30.3    0.185   7.2     2.97    251.    1.98      0.066
+        #8       0.200   568.    24.3    31.6    438.    1298.   15.7    28.3    30.3    0.185   7.2     2.91    256.    1.98      0.066
+        #...
+        
+        #NOTE: the file formats are NOT uniform for those files, even within a same batch! Examples:
+          #086_wood_010101_properties.csv
+            #0,0.000,604.,34.5,35.3,737.,819.,24.4,30.8,34.3,0.164,6.8,3.97,190.,2.21,0.071
+              #There are NO spaces, and no trailing 0's after the decimal point
+          
+          #087_wood_010101_properties.csv
+            #0,  0.0000,566.0000, 22.9000, 40.5000,525.0000,1078.0000,-32.4000,-36.3000, 34.7000,  0.1390,  5.6000,  3.0500,242.0000,  1.4500,  0.1210
+              #There ARE SPACES, AND trailing 0's after the decimal point
+          
+    #B. Ring info file, eg.: sample1_wood_010101_ring_info.csv
+        #Index   DataIdx RingPos RingWidth       RingArea        RingShell       RingAge RingYear
+        #0       154     3.85    3.85    46.5663 17      1       0
+        #1       254     6.35    2.5     80.1106 16      2       0
+        #2       386     9.65    3.3     165.876 15      3       0
+        #3       576     14.4    4.75    358.888 14      4       0
+        #4       744     18.6    4.2     435.425 13      5       0
+        #5       916     22.9    4.3     560.617 12      6       0
+        #6       1082    27.05   4.15    651.229 11      7       0
+        #7       1262    31.55   4.5     828.438 10      8       0
+        #8       1424    35.6    4.05    854.38  9       9       0
+        #...
+
+#(2) File: sample_names_conversion_table.txt: List of SilviScan sample_name (col #1) VS germplasm_id (col #2) equivalency, e.g:
+    #E560A1_2_3_8		23
+    #E560A2_3_4_5	24
+    #...
+
+#(3) Required files in the following folder: regroup_ss_data_REQS
+	#REQ_ri_all_possible_fields.txt
+	#REQ_wp_all_possible_fields.txt
+	#REQ_final_fields_order.txt
+	#copy_shifted_columns.txt
+	#uniformize_col_no.txt
+	#Warning_and_error_codes.txt
+	
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#What this script does:
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#Extract Silviscan data from raw files obtained from Paprican
+#For EACH properties file,
+  #1) extract sample name
+  #2) put sample name for each line of the file
+  #3) replace commas by tabs, remove spaces
+  #4) Add data_source_id
+  #5) put into file ABC
+  #6) #For EACH RING in the ring info file,
+	#1) If this is the last ring and it is incomplete (extra reads in wp vs ri files, RingShell=0, or last_ring_is_incomplete=1), or if there are too few reads, no transition calculated
+	#2) Else, calculate transition:
+		#1) extract ring end index, ring bark to pith number, ring pith to bark number from each line of the ring info file (1 line = 1 ring). Note: last ring typically ends before the last index in the properties file
+		#2) extract index and densities from properties file using the starting and ending indexes of the ring info file.
+		#3) calculate the minimim and maximum density for that ring, and the median value
+		#4) determine where (at what index) shift between early and latewood occurs
+		#5) create a file containing index, density, ring number (from pith), ring_number (from bark), transition (1= earlywood, 2=latewood)
+		#6) append each ring info to file DEF (will represent all rings for that sample at the end of that loop)
+  #7) Paste columns from DEF (all ring infos for that sample) into ABC (properties for that sample), and append to final file (all samples)
+#	NOTE: any additional reads at the bottom of the properties file which are not part of any ring in the ring info file will be kept...
+#		...and assigned nb_of_rings+1, 0, and \N as ring no (P2B), ring no (B2P) and transition, respectively,
+#		This ensures that ALL original reads are kept.
+  
+#Perform validations & final modifications
+  #1) Uniformize the number of columns (when needed), and replace empty fields with '\N'
+  #2) Check that repeated index and density numbers in column 2 vs 19 and 4 vs 20, respectively, are identical
+  #3) If identical, remove repeated columns
+  #4) Replace sample #'s with tree names
+  #5) Check if there are spaces in file. If yes, warn and stop.
+  #6) Split file into 1. measurements for 'silviscan_measurements' table
+                      #2. annotations from 'silviscan_annotations' table
+  #7) From the 2 files above, create files with only 1 sample for INSERT tests
+  #8) Display stats
+  
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#Output file will contain the following fields, in order:
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#
+    #1. tree_name
+    #2. index
+    #3. position
+    #4. density
+    #5. radial_diameter
+    #6. tangential_diameter
+    #7. coarseness
+    #8. cell_population
+    #9. ray_angle
+    #10.  isopycnic_angle
+    #11.  mfa
+    #12.  diffraction_intensity_cv
+    #13.  moe
+    #14.  wall_thickness
+    #15.  specific_surface
+    #16.  crystallite_width
+    #17.  crystallinity
+    #18.  data_source_id
+    #19. ring_pith_to_bark
+    #20. ring_bark_to_pith
+    #21. transition
+
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#Import data into TreeSource with the following psql commands:
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+  #\copy silviscan_measurements (germplasm_id,index,position,density,radial_diameter,tangential_diameter,coarseness,cell_population,ray_angle,isopycnic_angle,mfa,diffraction_intensity_cv,moe,wall_thickness,specific_surface,crystallite_width,crystallinity,data_source_id,ring_pith_to_bark,ring_bark_to_pith,transition) FROM 'OneTree_ss_out.txt'
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#Declare & define variables
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#Timestamp to add as a prefix for all temporary files in /dev/shm/, to avoid conflics during cocurrent script runs.
+ts=$(date +%Y%m%d%H%M%S)_$RANDOM	
+
+#Infile suffixes
+	wood_properties_file_suffix="_properties.csv"
+	ring_info_file_suffix="_ring_info.csv"
+	central_part="_wood_[0-9]+"				#This is the central part. Example: "_wood_010101" in "0618_wood_010101_properties.csv"
+
+#Intermediate and final files
+	out_ss_file="ss_out_${ts}.txt"
+	#out_header_file="header.txt"
+	#ri_header_file="header_ri.txt"
+	#out_samplenames_file="sample_names.txt" #Removed: 29/5/2018
+#Journal
+	summary_journal_filename="summary_journal.txt"
+	execution_journal_filename="log.txt"
+
+	#NEW 29/5/2018 - Error logs per sample and per ring
+	samples_err_j="sample_errors.txt"
+		#Remplacera: out_samplenames_file="sample_names.txt"
+	rings_err_j="ring_errors.txt"
+	
+#Folders
+	req_files_folder="regroup_ss_data_REQS"	#Folder with required files/scripts
+	temp_f="/dev/shm/regroup_ss_data_tempfiles_${ts}" #Temporary folder
+	err_warn_f="errors_and_warnings"
+	final_files_folder="final_files_${ts}"
+
+#Array with required files
+required_files=(
+	${req_files_folder}/REQ_ri_all_possible_fields.txt
+	${req_files_folder}/REQ_wp_all_possible_fields.txt
+	${req_files_folder}/REQ_final_fields_order.txt
+	${req_files_folder}/copy_shifted_columns.txt
+	${req_files_folder}/uniformize_col_no.txt
+	${req_files_folder}/Warning_and_error_codes.txt
+	sample_names_conversion_table.txt
+	)
+
+#Colors
+red_color="\033[1;31m"
+yellow_color="\033[1;33m"
+normal_color="\033[0m"
+
+
+#Other variables
+old_ifs="$IFS"
+IFS='
+'
+#header_identifier="Index" ---> will be found in the infiles, because Index could or could not be there
+
+#Main variables (wood transition determination, sample number, etc.)
+	declare -i ring_first_index                        #Starting index no for current index
+	declare -i ring_last_index                        #Ending index no for current index
+	declare -i lines_where_density_differs    #Number of lines where sample name from column 1 != sample name from column 19
+	declare -i lines_where_index_no_differs     #Number of lines where index from column 2 != index from column 20
+	#declare -i sample_count                         #Total number of samples. NOTE: 5/6/2018, remplacé par sample_number
+	declare -i sample_number                        #Incremented # each time process a new sample
+	declare -i test_run_turns                        #Number of samples for the test-run
+	declare -i ring_counter				#The line number in the ring info file, corresponding to the current ring being analyzed.
+	sample_number=0
+	
+	
+
+
+
+
+#Functions
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+##NOTE YET IMPLEMENTED
+function fnct_wrong_parameters {
+
+	echo "aaa"
+
+}
+
+
+#Function du calculate median value from a SINGLE-COLUMN file (Added 4/6/2018. Taken from script_recalc_Quintek_densitometry_files_from_dat_sum20171004.txt)
+#	The file DOESN'T NEED TO BE SORTED, it will be sorted below.
+#Parameter:
+#	1. file path
+function fnct_get_median_value {
+filepath=$1
+
+values_count=$(cat ${filepath}|wc -l) #Number of values
+	
+#Line at which the first value will be used to calculate median value (even number of values), or will become the median value itself (odd number of values).
+#Note: if number of lines is even, will start exactly at number of lines/2 (e.g. 20 ---> 10), if odd, will start at rounded up value of lines/2 (e.g. 5/2 =2.5 ---> 3)
+starting_line=$(echo "scale=1;${values_count}/2"|bc|awk '{printf("%d\n",$1 + 0.5)}')
+let ending_line=starting_line+1 #2nd value read line in case of even number of reads
+starting_line_value=$(sort -n ${filepath}|sed -n ${starting_line}p) #First value read
+ending_line_value=$(sort -n ${filepath}|sed -n ${ending_line}p) #Second value read (needed only in case of even number of reads)
+
+#Calculate median value		
+if [ $((values_count%2)) -eq 0 ]
+then #$((values_count%2)) = 0 ===> even
+	#echo "pair"
+	median_value=$(echo "scale=3;(${starting_line_value}+${ending_line_value})/2"|bc)
+	
+else #$((values_count%2)) = 1 ===> odd
+	#echo "impair"
+	median_value=${starting_line_value}
+fi
+
+}
+
+
+
+
+
+#Check for missing parameters
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+
+#Parameter #1: data_source_id
+#If no data_source_id was provided as an argument
+if [ -z $1 ];then
+	printf "Missing data_source_id (parameter #1)\nABORTING\n\n"
+	exit 0
+else
+	data_source_id=${1}
+fi
+
+#Parameter #2: folder_to_analyze
+#If no folder_to_analyze was provided as an argument
+if [ -z $2 ];then
+	printf "Missing folder_to_analyze (parameter #2)\nABORTING\n\n"
+	exit 0
+else
+	if [ ! -e ${2} ]
+	then 
+		printf "The folder ${2} doesn't exist!\nABORTING!\n"
+		exit 0
+	else
+		folder_to_analyze=${2}
+	fi
+fi
+
+#Parameter #3: ewlw_transition_method
+#If parameter is set to 1 or 2
+if [ ! -z $(echo $3|grep -E "^[12]$") ]
+then
+	ewlw_transition_method=${3}
+fi
+
+#Parameter #4: multiple_transitions_option
+#If parameter is set to 1 or 2
+if [ ! -z $(echo $4|grep -E "^[12]$") ]
+then
+	multiple_transitions_option=${4}
+fi
+
+
+#echo "data_source_id=${data_source_id}"
+#echo "folder_to_analyze=${folder_to_analyze}"
+#echo "ewlw_transition_method=${ewlw_transition_method}"
+#echo "multiple_transitions_option=${multiple_transitions_option}"
+#exit
+
+
+#Check for required files
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+printf "Checking for required files..."
+#Cycle through the required files array
+for element in $(seq 0 $(echo "scale=0;${#required_files[@]}-1"|bc))
+do 
+	#echo ${required_files[$element]}
+	if [ ! -e ${required_files[$element]} ]
+	then
+		printf "\n${red_color}Required file ${required_files[$element]} could not be found!\n"
+		printf "SCRIPT ABORTED\n\n${normal_color}"
+		exit
+	fi
+	dos2unix ${required_files[$element]} 2> /dev/null	
+done
+printf "ok\n\n"
+
+#Creates temporary folders if don't exist
+    if [ ! -e $temp_f ]; then mkdir $temp_f;fi
+    
+    if [ ! -e ${temp_f}/${err_warn_f} ]; then mkdir ${temp_f}/${err_warn_f};fi
+    
+    
+#Creates final files folder if doesn't exist
+    if [ ! -e $final_files_folder ]; then mkdir $final_files_folder;fi
+
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#***MAIN PROGRAM***
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+
+#Start of logging
+{
+
+
+#Starting header
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+echo "========================================="
+echo "Silviscan data preparation for import into TreeSource."
+echo "By Sébastien Clément, May 5th 2010"
+echo "Script $0"
+echo "Script name: $0, version: ${script_version}"
+printf "Run date: $(date)\n"
+uname -a
+echo "========================================="
+printf "Parameters chosen:\n"
+printf "\tmin_nb_of_reads_per_ring: ${min_nb_of_reads_per_ring} (NOT CURRENTLY IN USE)\n"
+printf "\tmin_nb_of_reads_for_transition: ${min_nb_of_reads_for_transition}\n"
+printf "\tmin_nb_of_ew_reads: ${min_nb_of_ew_reads} (NOT CURRENTLY IN USE)\n"
+printf "\tmin_nb_of_lw_reads: ${min_nb_of_lw_reads} (NOT CURRENTLY IN USE)\n"
+printf "\tmax_pct_lw_per_ring: ${max_pct_lw_per_ring}\n"
+printf "\tlimit_ring_width_factor: ${limit_ring_width_factor}\n"
+printf "\tmin_allowed_density: ${min_allowed_density}\n"
+printf "\tmax_allowed_density: ${max_allowed_density}\n"
+printf "\tring_numbering_method_p2b (1 = use ring numbers (RingAge) from the *_ring_info.file, 2 = use auto-incremented ring numbers): ${ring_numbering_method_p2b}\n"
+printf "\tring_numbering_method_b2p (1 = use ring numbers (RingShell) from the *_ring_info.file, 2 = use auto-decremented ring numbers): ${ring_numbering_method_b2p}\n"
+printf "\tstep: ${step}\n"
+printf "\tewlw_transition_method (1 = mid-range, 2 = median): ${ewlw_transition_method}\n"
+printf "\tmultiple_transitions_option (1 = last encoutered, 2 = first encountered): ${multiple_transitions_option}\n"
+printf "\tlast_ring_is_incomplete (1 = yes, 2 = no): ${last_ring_is_incomplete}\n"
+printf "\tlast_ring_is_false_ring (1 = no, 2 = yes): ${last_ring_is_false_ring}\n"
+printf "\tfirst_ring_is_the_pith (1 = no, 2 = yes): ${first_ring_is_the_pith}\n"
+echo
+
+
+#List files, extract sample names from filenames, and verify that all properties files have corresponding ring info files
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+printf "Getting list of input files..."
+#List all properties files [NEW! 31/5/2016]
+	#Filenames (e.g. 0618_wood_010101_properties.csv)
+	ls -1 ${folder_to_analyze}|grep "${wood_properties_file_suffix}$" > ${temp_f}/all_wp_files.txt
+	#Prefixes (e.g. 0618_wood_010101)
+	perl -pe "s/${wood_properties_file_suffix}//g" ${temp_f}/all_wp_files.txt > ${temp_f}/all_wp_prefixes.txt
+	#Sample names (e.g. 0618)
+	perl -pe "s/(\S)${central_part}/\1/g" ${temp_f}/all_wp_prefixes.txt > ${temp_f}/all_wp_samples.txt
+	#Group all 3 together
+	paste ${temp_f}/all_wp_files.txt ${temp_f}/all_wp_prefixes.txt ${temp_f}/all_wp_samples.txt|sort -k1,1 > ${temp_f}/all_wp.txt
+
+#List all ring_info files [NEW! 31/5/2016]
+	ls -1 ${folder_to_analyze}|grep "${ring_info_file_suffix}$" > ${temp_f}/all_ri_files.txt
+	perl -pe "s/${ring_info_file_suffix}//g" ${temp_f}/all_ri_files.txt > ${temp_f}/all_ri_prefixes.txt
+	perl -pe "s/(\S)${central_part}/\1/g" ${temp_f}/all_ri_prefixes.txt > ${temp_f}/all_ri_samples.txt
+	paste ${temp_f}/all_ri_files.txt ${temp_f}/all_ri_prefixes.txt ${temp_f}/all_ri_samples.txt|sort -k1,1 > ${temp_f}/all_ri.txt
+	
+printf "done.\n"
+echo
+
+#Compare the prefixes (e.g. 0618_wood_010101) from wp and ri files to see that each file has a matching one
+printf "Checking that each propery file has a matching ring info file, and vice-versa..."
+join -t $'\t' <(awk -F "\t" '{print $2"\t"$1}' ${temp_f}/all_wp.txt|sort -k1,1) <(awk -F "\t" '{print $2"\t"$1}' ${temp_f}/all_ri.txt|sort -k1,1)|cut -f2 > ${temp_f}/matching_wp_ri_files.txt
+join -t $'\t' -v1 <(awk -F "\t" '{print $2"\t"$1}' ${temp_f}/all_wp.txt|sort -k1,1) <(awk -F "\t" '{print $2"\t"$1}' ${temp_f}/all_ri.txt|sort -k1,1)|cut -f2 > ${temp_f}/exclusive_wp_files.txt
+join -t $'\t' -v2 <(awk -F "\t" '{print $2"\t"$1}' ${temp_f}/all_wp.txt|sort -k1,1) <(awk -F "\t" '{print $2"\t"$1}' ${temp_f}/all_ri.txt|sort -k1,1)|cut -f2 > ${temp_f}/exclusive_ri_files.txt
+
+#If wp files have no matching ri files, warn and exit
+if [ -s ${temp_f}/exclusive_wp_files.txt ]
+then
+	printf "\n${red_color}There are wood property files that have no ring info equivalents:\n"
+	cat ${temp_f}/exclusive_wp_files.txt|perl -pe 's/^/\t/g'
+	printf "Please, check the input files and restart.\n"
+	printf "SCRIPT ABORTED\n\n${normal_color}"
+	exit
+fi
+
+#If ri files have no matching wp2 files, warn and exit
+if [ -s ${temp_f}/exclusive_ri_files.txt ]
+then
+	printf "\n${red_color}There are ring info files that have no wood property equivalents:\n"
+	cat ${temp_f}/exclusive_ri_files.txt|perl -pe 's/^/\t/g'
+	printf "Please, check the input files and restart.\n"
+	printf "SCRIPT ABORTED\n\n${normal_color}"
+	exit
+fi
+printf "done.\n"
+echo
+
+#Check that sample names from filenames match those in the provided list
+#Note: only checked for wp files, since those and ri have been checked together already
+printf "Checking that sample names from filenames match those in the provided list..."
+join -t $'\t' <(sort -u ${temp_f}/all_wp_samples.txt) <(sort -k1,1 -u sample_names_conversion_table.txt|cut -f1) > ${temp_f}/matching_samples.txt
+join -t $'\t' -v1 <(sort -u ${temp_f}/all_wp_samples.txt) <(sort -k1,1 -u sample_names_conversion_table.txt|cut -f1) > ${temp_f}/samples_exclusive_to_files.txt
+join -t $'\t' -v2 <(sort -u ${temp_f}/all_wp_samples.txt) <(sort -k1,1 -u sample_names_conversion_table.txt|cut -f1) > ${temp_f}/samples_exclusive_to_list.txt
+
+
+#If some samples from filenames were not found in sample_names_conversion_table.txt, warn and exit
+if [ -s ${temp_f}/samples_exclusive_to_files.txt ]
+then
+	printf "\n${red_color}There are samples that were not found in the sample_names_conversion_table.txt list:\n"
+	cat ${temp_f}/samples_exclusive_to_files.txt|perl -pe 's/^/\t/g'
+	printf "Please, check the input files and restart.\n"
+	printf "SCRIPT ABORTED\n\n${normal_color}"
+	exit
+fi
+printf "done.\n"
+echo
+
+#printf "There are $(sort -u ${temp_f}/all_wp_samples.txt|wc -l) samples in files $(sort -k1,1 -u sample_names_conversion_table.txt|wc -l) in list.\n"
+#Since the "exclusive from files" condition was avoided above, we can assume that all samples from files were all found in the reference list.
+printf "All $(cat ${temp_f}/matching_samples.txt|wc -l) samples from files were found in the $(sort -k1,1 -u sample_names_conversion_table.txt|wc -l) samples from sample_names_conversion_table.txt.\n"
+#However, there still can be samples in the reference list that were not in files
+if [ -s ${temp_f}/samples_exclusive_to_list.txt ]
+then
+	printf "However, the following $(cat ${temp_f}/samples_exclusive_to_list.txt|wc -l) samples from the file were not found in the SilviScan files:\n"
+	sort ${temp_f}/samples_exclusive_to_list.txt|perl -pe 's/^/\t/g'
+	printf "${red_color}"
+	choice="-";while [ $(echo $choice|grep '[yn]'|wc -l) -eq 0 ];do printf "\r"; read -p "Continue [y/n]?" -n1 -s choice;done;printf "\n"
+	printf "${normal_color}"
+	if [ ${choice} == "n" ]
+	then
+		printf "${red_color}SCRIPT ABORTED\n\n${normal_color}"
+		exit
+	fi
+	echo
+fi
+
+
+
+
+#Analyzing infiles
+#=============================================================================================
+#dos2unix all files
+dos2unix ${folder_to_analyze}/* 2> /dev/null #9/3/2016. This avoids the script to find fakely different headers because of non-unixxed files still containing CR's.
+
+#Save the header of the first encountered properties file into "header_wp.txt"
+#Note: remove the spaces before and after each header
+#[20180104]: now, besides commas, also replaces tabs in headers, just in case the files are already tab-separated.
+head -1 ${folder_to_analyze}/$(ls -1 ${folder_to_analyze}|grep -a "${wood_properties_file_suffix}"|head -1)|perl -pe 's/(,|\t)/\n/g'|perl -pe 's/^ +//g'|perl -pe 's/ +\n/\n/g' > ${temp_f}/header_wp.txt
+#Finds the first header to identify the line as the "header line"
+wp_header_identifier=$(head -1 ${temp_f}/header_wp.txt)
+
+
+#Save the header of the first encountered ring info file into "header_ri.txt"
+#Note: remove the spaces before and after each header
+#[20180104]: now, besides commas, also replaces tabs in headers, just in case the files are already tab-separated.
+head -1 ${folder_to_analyze}/$(ls -1 ${folder_to_analyze}|grep -a "${ring_info_file_suffix}"|head -1)|perl -pe 's/(,|\t)/\n/g'|perl -pe 's/^ +//g'|perl -pe 's/ +\n/\n/g' > ${temp_f}/header_ri.txt
+#Finds the first header to identify the line as the "header line"
+ri_header_identifier=$(head -1 ${temp_f}/header_ri.txt)
+
+
+#Wood properties: check which properties are present in the header, and at which column position
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+printf "Analyzing wood property file headers..."
+printf "" > ${temp_f}/found_header_lines_numbers_wp.txt
+missing_wp_index=0 #missing_wp_index=1: Index col not found
+#Cycle through each possible field listed in REQ_wp_all_possible_fields.txt
+for all_possible_headers_wp_line in $(grep -avE "^#|^$" ${req_files_folder}/REQ_wp_all_possible_fields.txt)
+do 
+	header_name_wp=$(echo $all_possible_headers_wp_line|cut -f1)
+	required_header_wp=$(echo $all_possible_headers_wp_line|cut -f3)
+	
+	#The found column no is put in found_header_line_no_wp
+	#line before 4/3/2016: found_header_line_no_wp=$(grep -in "^$header_name_wp" ${temp_f}/header_wp.txt|perl -pe 's/^(\d+):.+/\1/g')
+	#NOTE: if ever there are > 1 columns matching the header, the line numbers will be separated by spaces, e.g. "15 18". This is checked for below.
+	found_header_line_no_wp=$(awk -F "\t" -v h_name=$header_name_wp '{if(tolower($1) ~ tolower(h_name)) print NR}' ${temp_f}/header_wp.txt)
+	
+	#[New: 4/3/2016]: If searched header found at several header positions in the properties file, warn and exit.
+	if [ ! -z $(echo $found_header_line_no_wp|grep -a " ") ]
+	then 
+		printf "\t\t${header_name_wp} was found several times in the properties file header!\n"
+		printf "\t\tABORTING!\n"
+		exit 0
+	fi
+	
+	#echo $found_header_line_no_wp
+	if [ -z ${found_header_line_no_wp} ] #If this header was not found, col_no is empty
+	then
+		printf "\n\t${header_name_wp} NOT FOUND in the first WOOD PROPERTIES FILE!\n"
+		found_header_line_no_wp="0"
+		if [ $header_name_wp == "Index" ]
+		then
+			printf "\t\tNote: an Index column will be automatically added\n"
+			missing_wp_index=1
+		fi
+		if [ ! -z $required_header_wp ]
+		then
+			if [ $required_header_wp == "REQ" ]
+			then
+				printf "\t\t${header_name_wp} IS A REQUIRED HEADER!\n"
+				printf "\t\tABORTING!\n"
+				exit 0
+			fi
+		fi
+	
+	
+	fi
+	echo $found_header_line_no_wp >> ${temp_f}/found_header_lines_numbers_wp.txt
+done
+printf "done.\n"
+echo
+
+#Create a variable definition file with each property's column position
+printf "Setting variable definitions for each property's column position in the wood properties file..."
+paste <(grep -avE "^#|^$" ${req_files_folder}/REQ_wp_all_possible_fields.txt|cut -f2) ${temp_f}/found_header_lines_numbers_wp.txt|perl -pe 's/\t/=/g' > ${temp_f}/column_no_var_definition_wp.txt
+#Example:
+#	index_col_no_wp=1
+#	position_col_no=2
+#	density_col_no=3
+#	radial_diameter_col_no=4
+#	tangential_diameter_col_no=5
+#	coarseness_col_no=6
+#	cell_population_col_no=7
+#	ray_angle_col_no=8
+#	isopycnic_angle_col_no=9
+#	mfa_col_no=10
+#	diffintens_cv_col_no=11
+#	moe_col_no=12
+#	wall_thickness_col_no=13
+#	specific_surface_col_no=14
+#	crystallite_width_col_no=15
+#	crystallinity_col_no=16
+
+. ${temp_f}/column_no_var_definition_wp.txt
+printf "done.\n"
+echo
+
+
+#For test purpose only, create a file with echo commands to list all the variables contents
+#List the value of each variable containing the column numbers fro the original wood properties file
+if [ $test -eq 1 ]
+then
+	grep -avE "^#|^$" ${req_files_folder}/REQ_wp_all_possible_fields.txt|cut -f2 |perl -pe 's/(\S+)/echo \1=\$\1/g' > ${temp_f}/commands_2_view_all_found_wp_col_pos.txt
+	echo
+	printf "\tWood properties file original column positions\n"
+	printf "\t----------------------------------------------\n"
+	. ${temp_f}/commands_2_view_all_found_wp_col_pos.txt|perl -pe 's/^/\t/g'
+fi
+
+
+
+#Ring info: check which properties are present in the header, and and which column position
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+printf "\nAnalyzing ring info file headers..."
+printf "" > ${temp_f}/found_header_lines_numbers_ri.txt
+#missing_ri_index=0 #missing_ri_index=1: Index col not found
+#Cycle through each possible field listed in REQ_ri_all_possible_fields.txt
+for all_possible_headers_ri_line in $(grep -avE "^#|^$" ${req_files_folder}/REQ_ri_all_possible_fields.txt)
+do 
+	
+	header_name_ri=$(echo $all_possible_headers_ri_line|cut -f1)
+	required_header_ri=$(echo $all_possible_headers_ri_line|cut -f3)
+	
+	#The found column no is put in found_header_line_no_ri
+	found_header_line_no_ri=$(awk -F "\t" -v h_name=$header_name_ri '{if(tolower($1) ~ tolower(h_name)) print NR}' ${temp_f}/header_ri.txt)
+		#Note: if ever the header name is found on several lines, the lines number will appear in the variable separated by spaces (e.g. "3 5")
+		
+	
+	
+	#[New: 4/3/2016]: If searched header found at several header positions in the ring info file, warn and exit.
+	if [ ! -z $(echo $found_header_line_no_ri|grep -a " ") ]
+	then 
+		printf "\t\t${header_name_ri} was found several times in the ring info file header!\n"
+		printf "\t\tABORTING!\n"
+		exit 0
+	fi
+
+	
+	
+	#If this header was not found (col_no is empty)
+	#echo $found_header_line_no_ri
+	if [ -z ${found_header_line_no_ri} ]
+	then
+		printf "\n\t${header_name_ri} NOT FOUND in the first RING INFO FILE!!\n"
+		found_header_line_no_ri="0"
+		
+		#if that header was required
+		if [ "$required_header_ri" == "REQ" ] 	#Note: double quotes around the variable prevent the "unary operator expected" error.
+		then
+			printf "\t\t${header_name_ri} IS A REQUIRED HEADER!\n"
+			printf "\t\tABORTING!\n"
+			exit 0
+		
+		else
+			printf "\t\tBut it is not an essential field. Continuing...\n"
+		fi
+	fi
+	echo $found_header_line_no_ri >> ${temp_f}/found_header_lines_numbers_ri.txt
+done
+printf "done.\n"
+echo
+
+#Create a variable definition file with each property's column position
+printf "Setting variable definitions for each property's column position in the ring info file..."
+paste <(grep -avE "^#|^$" ${req_files_folder}/REQ_ri_all_possible_fields.txt|cut -f2) ${temp_f}/found_header_lines_numbers_ri.txt|perl -pe 's/\t/=/g' > ${temp_f}/column_no_var_definition_ri.txt
+#Example:
+#	index_col_no_ri=0
+#	dataidx_col_no=1
+#	ringpos_col_no=0
+#	ringwidth_col_no=0
+#	ringarea_col_no=0
+#	ringshell_col_no=2
+#	ringage_col_no=3
+#	ringyear_col_no=0
+. ${temp_f}/column_no_var_definition_ri.txt
+printf "done.\n"
+echo
+
+#For test purpose only, create a file with echo commands to list all the variables contents
+#List the value of each variable containing the column numbers fro the original ring info file
+if [ $test -eq 1 ]
+then
+	grep -avE "^#|^$" ${req_files_folder}/REQ_ri_all_possible_fields.txt|cut -f2 |perl -pe 's/(\S+)/echo \1=\$\1/g' > ${temp_f}/commands_2_view_all_found_ri_col_pos.txt
+	echo
+	printf "\tRing info file original column positions\n"
+	printf "\t----------------------------------------\n"
+	. ${temp_f}/commands_2_view_all_found_ri_col_pos.txt|perl -pe 's/^/\t/g'
+fi
+
+
+
+#Check that all wood property files have the same header
+#[NEW 20180622]: added the following command to remove spaces in headers prior to comparison, to avoid false differences: perl -pe 's/ //g' 
+printf "\nChecking that headers are the same for all wood property files..."
+head -1 ${folder_to_analyze}/*${wood_properties_file_suffix}|grep -avE '==>|^$'|perl -pe 's/ //g'|sort -fu > ${temp_f}/wp_distinct_headers.txt
+if [ $(cat ${temp_f}/wp_distinct_headers.txt |wc -l) -gt 1 ]
+then 
+	echo
+	printf "${red_color}\n\tThere are $(cat ${temp_f}/wp_distinct_headers.txt |wc -l) different headers among the wood property files.\nPlease see the file '${temp_f}/wp_distinct_headers.txt'\n${normal_color}"
+	printf "${red_color}\tIf you want to accept the differences (e.g. punctuation or case differences) and continue, press 'y'.\n${normal_color}"
+	choice="-"
+	while [ ! $(echo $choice|grep '[yn]') ]
+	do
+		printf "\r"; read -p "[y/n]?" -n1 -s choice
+	done
+	printf "\n"
+	
+	if [ $choice == "n" ]
+	then
+		printf "${red_color}\t***ABORTED***\n\n${normal_color}"
+		exit 0
+	fi
+	
+	
+else 
+	#rm ${temp_f}/wp_distinct_headers.txt
+	printf "ok!\n"
+fi
+
+#Check that all ring info files have the same header
+#[NEW 20180622]: added the following command to remove spaces in headers prior to comparison, to avoid false differences: perl -pe 's/ //g' 
+printf "\nChecking that headers are the same for all ring info files..."
+head -1 ${folder_to_analyze}/*${ring_info_file_suffix}|grep -avE '==>|^$'|perl -pe 's/ //g' |sort -fu > ${temp_f}/ri_distinct_headers.txt
+if [ $(cat ${temp_f}/ri_distinct_headers.txt |wc -l) -gt 1 ]
+then 
+	echo
+	printf "\n\tThere are $(cat ${temp_f}/ri_distinct_headers.txt |wc -l) different headers among the ring info files. Please check them. See the file '${temp_f}/ri_distinct_headers.txt'\n"
+	exit 0
+else 
+	#rm ${temp_f}/ri_distinct_headers.txt
+	printf "ok!\n"
+fi
+
+
+#Create log files
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+printf "" > ${final_files_folder}/${out_ss_file}
+#printf "" > ${temp_f}/${out_samplenames_file} #Removed 29/5/2018
+printf "" > ${final_files_folder}/incomplete_rings.txt
+printf "Échantillon\tNombre de cernes\t# cerne\t# cerne (écorce-moëlle)\tIndex début\tIndex fin\tDensité min.\tDensité max.\tDensité de transition\tIndex début bois final\n" > ${temp_f}/all_samples_ring_info.txt
+printf "Sample_name\terror_code\tdescription\n" > ${temp_f}/${err_warn_f}/${samples_err_j}
+printf "Sample_name\tring_no_p2b\terror_code\tdescription\n" > ${temp_f}/${err_warn_f}/${rings_err_j}
+
+
+
+#TRACER
+#echo "END HERE";exit
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#List all wood properties files in current dir
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+
+for file in $(cat ${temp_f}/all_wp.txt|sort) #[NEW! 20160531] #Line before 31/5/2016for file in $(ls -1 ${folder_to_analyze}|grep "${wood_properties_file_suffix}"|sort)
+do
+	#Extract sample name from filename
+	sample_name=$(echo ${file}|cut -f3) #e.g. 0618. Line before 31/5/2016: sample_name=$(echo ${file}|perl -pe 's/(\S)_wood.+csv/\1/g')
+	file_prefix=$(echo ${file}|cut -f2) #e.g. 0618_wood_010101
+	file_name=$(echo ${file}|cut -f1) # e.g. 0618_wood_010101_ring_info.csv
+	sample_number+=1
+	#echo $file_name, $sample_name
+	
+	#Show sample name
+	printf "\n(${sample_number}) ${sample_name}"
+	if [ $(grep -av "$wp_header_identifier" ${folder_to_analyze}/${file_name}|grep ' ' |wc -l) -ne 0 ]; then 
+		printf "${sample_name}\tW20\n" >> ${temp_f}/${err_warn_f}/${samples_err_j}	#Added 29/5/2018
+		printf "${yellow_color}\tNOTE: file \"${file_name}\" CONTAINS SPACES${normal_color}\n"
+	fi
+	
+	#dos2unix ${folder_to_analyze}/$file 2>/dev/null. Since 9/3/2016, done on all files at the beginning.
+	
+	#DATA_SOURCE_ID NO LONGER ADDED HERE
+	#Remove header, replace commas by tabs, REMOVE SINGLE SPACES, add sample name at the end, and put in temporary file for that sample
+	grep -av "${wp_header_identifier}" ${folder_to_analyze}/$file_name|perl -pe 's/,/\t/g'| perl -pe 's/ //g'|perl -pe "s/\n/\t${sample_name}\n/g"  > ${temp_f}/current_sample_temp_file_A.txt
+  
+	
+	#Uniformize column number
+	bash ${req_files_folder}/uniformize_col_no.txt ${temp_f}/current_sample_temp_file_A.txt 1 y temp_file.txt y
+	mv temp_file.txt ${temp_f}/current_sample_temp_file_A.txt
+
+  
+	sample_name_col_no=$(awk -F "\t" '{print NF}' ${temp_f}/current_sample_temp_file_A.txt|sort -un|tail -1)
+	#	DON NOT REMOVE: used around line 1793 to create variables!
+	
+	#If index not present, add it at the end.
+	if [ $missing_wp_index -eq 1 ]
+	then
+		#Create a column with sequential numbering starting at 0
+		let seq_end=$(cat ${temp_f}/current_sample_temp_file_A.txt|wc -l)-1
+		paste ${temp_f}/current_sample_temp_file_A.txt <(seq 0 $seq_end) > temp.txt
+		mv temp.txt ${temp_f}/current_sample_temp_file_A.txt
+		let index_col_no_wp=$(awk -F "\t" '{print NF}' ${temp_f}/current_sample_temp_file_A.txt|sort -un|tail -1) #Find the column no that the newly created Index column will have
+		
+	#[20180108] Check if: 1) there are some replicated indexes; 2) if there are some missing indexes
+	else
+		
+		#Get all indexes for current sample (sort here, because we do not check the order)
+			awk -F "\t" -v icn=${index_col_no_wp} '{print $icn}' ${temp_f}/current_sample_temp_file_A.txt|sort -n >  ${temp_f}/current_sample_all_actual_indexes.txt
+			all_index_counts=$(cat ${temp_f}/current_sample_all_actual_indexes.txt|wc -l)
+
+		#Get any replicated indexes
+			sort ${temp_f}/current_sample_all_actual_indexes.txt|uniq -d >  ${temp_f}/current_sample_replicated_indexes.txt
+			
+			#If there are replicated indexes, warn, show and don't continue with that sample
+			if [ -s ${temp_f}/current_sample_replicated_indexes.txt ]
+			then 
+				cp ${temp_f}/current_sample_replicated_indexes.txt ${temp_f}/${err_warn_f}/${sample_name}_replicated_indexes.txt
+				
+				printf "${sample_name}\tE20\n" >> ${temp_f}/${err_warn_f}/${samples_err_j}	#Added 29/5/2018
+				printf "${red_color}\tError: There are some replicated indexes in the current sample wood properties file! (see ${temp_f}/${err_warn_f}/${sample_name}_replicated_indexes.txt)\n"
+				perl -pe 's/^/\t\t/g' ${temp_f}/${err_warn_f}/${sample_name}_replicated_indexes.txt
+				printf "\tSKIPPING SAMPLE${normal_color}\n"
+				#printf "\t NOTE: file \"${file_name}\" HAS REPLICATED INDEXES. PLEASE CHECK FILE.\n" >> ${temp_f}/${out_samplenames_file} #Removed 29/5/2018
+				
+				continue	#Goes to the next sample immediately
+			
+			fi
+	
+		#Get all possible theoretical indexes
+			min_index_value=$(head -1 ${temp_f}/current_sample_all_actual_indexes.txt)
+			max_index_value=$(tail -1 ${temp_f}/current_sample_all_actual_indexes.txt)
+			let all_possible_index_counts=${max_index_value}-${min_index_value}+1
+			let missing_indexes_count=${all_possible_index_counts}-${all_index_counts}
+		
+		#Check if the actual number of different indexes (reads) is NOT equal to the theoretical one
+			#It means that there are MISSING reads
+			#At the whole sample level, this will not have any impact. 
+			#At the ring level, since the start and end indexes from the ring info file are used as minimal (>=) and maximal (<=) reference values, respectively, missing indexes at the very beginning or end of the ring will not prevent EW/LW calculations.
+			#Hence a warning is sufficient.
+			#Unless there are replicated indexes (treated above), there is no possibility to have more indexes than the theoretical number in all_possible_index_counts
+			if [ ${missing_indexes_count} -ne 0 ]
+			then 
+				#List all possible indexes in a file
+				seq ${min_index_value} ${max_index_value} > ${temp_f}/current_sample_all_possible_indexes.txt
+				
+				printf "${sample_name}\tW21\n" >> ${temp_f}/${err_warn_f}/${samples_err_j}	#Added 29/5/2018
+				printf "${yellow_color}\tWarning: There are ${missing_indexes_count} missing indexes (reads) in the current sample wood properties file (see ${temp_f}/${err_warn_f}/${sample_name}_missing_indexes.txt):\n"
+				join <(sort ${temp_f}/current_sample_all_actual_indexes.txt) <(sort ${temp_f}/current_sample_all_possible_indexes.txt) -v2 |sort -n > ${temp_f}/${err_warn_f}/${sample_name}_missing_indexes.txt
+				perl -pe 's/^/\t/g' ${temp_f}/${err_warn_f}/${sample_name}_missing_indexes.txt|head|cat - <(if [ ${missing_indexes_count} -gt 10 ];then printf "\t(...)\n";else printf "\n";fi)
+				printf "${normal_color}"
+			fi
+	fi
+
+	#12/6/2018
+	#Get last index value for current sample from the wp file (native or calculated index)
+	current_sample_last_index_value_wp=$(awk -F "\t" -v icn=${index_col_no_wp} '{print $icn}' ${temp_f}/current_sample_temp_file_A.txt|sort -n|tail -1)
+	
+
+
+	#For test only
+	#if [ $test -eq 1 ]
+	#then
+	#	echo "Wood properties with sample name and index (4 first and 4 last columns)"
+	#	paste <(head ${temp_f}/current_sample_temp_file_A.txt|cut -f1-4)  <(perl -e 'print "(...)\n" x 10') <(awk -F "\t" '{print $(NF-3)"\t"$(NF-2)"\t"$(NF-1)"\t"$(NF)}' ${temp_f}/current_sample_temp_file_A.txt|head)|perl -pe 's/^/\t/g'
+	#	echo 
+	#	printf "\tIndex column number (index_col_no_wp): ${index_col_no_wp}\n"
+	#	printf "\t Sample column number (sample_name_col_no): ${sample_name_col_no}\n"
+	#fi
+  
+    
+    
+	#Check for errors with positions
+	#---------------------------------------------------------
+	#29/5/2018
+    
+    
+		#Get all positions for current sample (DO NOT SORT AT THIS POINT)
+			awk -F "\t" -v pcn=${position_col_no} '{print $pcn}' ${temp_f}/current_sample_temp_file_A.txt >  ${temp_f}/current_sample_all_actual_positions.txt
+			#Number of positions = number of indexes calculated above
+			all_positions_counts=${all_index_counts}
+		
+		#Check if they are ordered. If yes, warn and skip to next sample.
+			#If positions are not ordered numerically (sort -nc), this will generate an error (STDERR), captured in the file below.
+			sort -nc ${temp_f}/current_sample_all_actual_positions.txt 2> ${temp_f}/current_sample_positions_sort_errors.txt
+			
+			#If the file contains something
+			if [ $(cat ${temp_f}/current_sample_positions_sort_errors.txt|wc -l) -gt 0 ]
+			then 
+				cp ${temp_f}/${err_warn_f}/${sample_name}_positions_sort_errors.txt	#Put the sort error for the current sample into a file
+				printf "${sample_name}\tE21\n" >> ${temp_f}/${err_warn_f}/${samples_err_j}	#Added 31/5/2018
+				printf "${red_color}\tError: There are some disordered positions in the current sample wood properties file!\n"
+				
+				printf "\tSKIPPING SAMPLE${normal_color}\n"
+				
+				continue
+			
+			fi
+		
+		
+		#Check if there are some replicated. If yes, warn and skip to next sample.
+			if [ $(sort ${temp_f}/current_sample_all_actual_positions.txt |uniq -d|wc -l) -gt 0 ]
+			then
+				sort ${temp_f}/current_sample_all_actual_positions.txt |uniq -d > ${temp_f}/${err_warn_f}/${sample_name}_replicated_positions.txt
+				
+				printf "${sample_name}\tE22\n" >> ${temp_f}/${err_warn_f}/${samples_err_j}	#Added 31/5/2018
+				printf "${red_color}\tError: There are some replicated positions in the current sample wood properties file!\n"
+				perl -pe 's/^/\t\t/g' ${temp_f}/${err_warn_f}/${sample_name}_replicated_positions.txt
+				
+				printf "\tSKIPPING SAMPLE${normal_color}\n"
+				
+				continue
+			fi
+			
+			
+			
+		#Check for irregular steps (missing or extra positions). If yes, warn but proceed anyways.
+			min_pos_value=$(sort -n ${temp_f}/current_sample_all_actual_positions.txt|head -1)	#e.g. 0
+			max_pos_value=$(sort -n ${temp_f}/current_sample_all_actual_positions.txt|tail -1)	#e.g. 59.725
+			#Note: step=0.025
+			
+			#Get the number of decimals in the step
+			decimals=$(echo $step|perl -pe 's/^\d+\.//g') #e.g. 025
+			decimals_count=${#decimals} 	#e.g. 3
+
+			#List all theoretical positions given the min, max and step
+			seq $min_pos_value $step $max_pos_value|perl -pe 's/,/./g' > ${temp_f}/current_sample_all_possible_positions.txt
+			#Notes: 
+			#	- all numbers will have the same number of decimals as the step
+			#	- perl -pe 's/,/./g' converts "," to "." in case seq decides to output commas (for example, when LANG=fr_FR).
+			#	- we will use '{printf "%.*f\n",decimals,$1}' below to make sure the number of decimals are identical in both the possible and the actual positions, before the join (in which 0.05 is different from 0.050)
+			#0.000
+			#0.025
+			#0.050
+			#0.075
+			#0.100
+			#0.125
+			#0.150
+			#...
+			#59.725
+
+			#Get positions missing from sample data
+			join -v1 <(awk -v decimals=${decimals_count} '{printf "%.*f\n",decimals,$1}' ${temp_f}/current_sample_all_possible_positions.txt|sort) <(awk -v decimals=${decimals_count} '{printf "%.*f\n",decimals,$1}' ${temp_f}/current_sample_all_actual_positions.txt|sort) > ${temp_f}/current_sample_missing_positions.txt
+			#0.300
+			#0.400
+			#0.525
+			#0.775
+			
+			#If there are missing positions, warn, but proceed. Note: in v_rings1, the reading step (e.g. 0.025) is not used in calculations, hence it is not dramatic if a read is missing.
+			if [ $(cat ${temp_f}/current_sample_missing_positions.txt|wc -l) -gt 0 ]
+			then 
+				cp ${temp_f}/current_sample_missing_positions.txt ${temp_f}/${err_warn_f}/${sample_name}_missing_positions.txt
+				printf "${sample_name}\tW24\n" >> ${temp_f}/${err_warn_f}/${samples_err_j}
+				printf "${yellow_color}\tWarning: There are missing positions in the current sample wood properties file (see ${temp_f}/${err_warn_f}/${sample_name}_missing_positions.txt):\n"
+				perl -pe 's/^/\t\t/g' ${temp_f}/${err_warn_f}/${sample_name}_missing_positions.txt
+				printf "\t${normal_color}\n"
+				
+			fi
+
+			
+			
+			#Get positions in extra in sample data compared to all possible positions.
+			#awk -v decimals=${decimals_count} '{printf "%.*f\n",decimals,$1}' prints exactly the number of decimals stored in $decimals_count
+			join -v2 <(awk -v decimals=${decimals_count} '{printf "%.*f\n",decimals,$1}' ${temp_f}/current_sample_all_possible_positions.txt|sort) <(awk -v decimals=${decimals_count} '{printf "%.*f\n",decimals,$1}' ${temp_f}/current_sample_all_actual_positions.txt|sort) > ${temp_f}/current_sample_extra_positions.txt
+			#0.777
+			
+	    
+			#If there are extra positions, warn, but proceed.
+			if [ $(cat ${temp_f}/current_sample_extra_positions.txt|wc -l) -gt 0 ]
+			then 
+				cp ${temp_f}/current_sample_extra_positions.txt ${temp_f}/${err_warn_f}/${sample_name}_extra_positions.txt
+				printf "${sample_name}\tW25\n" >> ${temp_f}/${err_warn_f}/${samples_err_j}
+				printf "${yellow_color}\tWarning: There are extra/irregular positions in the current sample wood properties file (see ${temp_f}/${err_warn_f}/${sample_name}_extra_positions.txt):"
+				perl -pe 's/^/\t\t/g' ${temp_f}/${err_warn_f}/${sample_name}_extra_positions.txt
+				printf "\t${normal_color}\n"
+			fi
+    
+	printf "\n==========================================================================\n"
+    
+    
+ #   exit
+    
+    
+	#---------------------------------------------------------------------------------------------------------------------------------------------------
+	#GET CORRESPONDING RING INFO FILE, FORMAT AND GATHER STATS
+	#---------------------------------------------------------------------------------------------------------------------------------------------------
+
+	#Get ring info filename from the wood properties file prefix (e.g. 0618_wood_010101), common to both files.
+	ri_file_name=$(join -t $'\t' <(printf "${file_prefix}\n") <(awk -F "\t" '{print $2"\t"$1}' ${temp_f}/all_ri.txt|sort -k1,1)|cut -f2)
+	
+	#Note: if index not present, it is NOT added.
+	
+	
+	
+	
+	#New: 13/9/2018
+	#If last ring is a false ring used as a boundary (special protocol, last_ring_is_false_ring=2), then remove it from the ring_info file
+	if [ $last_ring_is_false_ring -eq 2 ]
+	then
+		printf "${yellow_color}The last line of ${folder_to_analyze}/${ri_file_name} is a false ring inserted by FPInnovations (special protocol) for calculation purposes, it will be removed:${normal_color}\n"
+		tail -n1 ${folder_to_analyze}/${ri_file_name}|perl -pe 's/^/\t/g'
+		
+		head -n-1 ${folder_to_analyze}/${ri_file_name} > ${temp_f}/rinfo_wo_false_ring.txt
+	
+	else
+		#Keep the ring info file as it is, simply copy it 
+		cp ${folder_to_analyze}/${ri_file_name} ${temp_f}/rinfo_wo_false_ring.txt
+	fi
+	
+	#Remove header, replace commas with tabs, remove spaces and keep only columns 2 (DataIdx), 6 (RingShell) and 7 (RingAge). Put formatted ring_info file into a temp file
+	grep -av "^${ri_header_identifier}" ${temp_f}/rinfo_wo_false_ring.txt|perl -pe 's/,/\t/g'|perl -pe 's/ //g'|awk -F "\t" -v awk_dataidx_col_no=$dataidx_col_no -v awk_ringshell_col_no=$ringshell_col_no -v awk_ringage_col_no=$ringage_col_no '{print $awk_dataidx_col_no"\t"$awk_ringshell_col_no"\t"$awk_ringage_col_no}' > ${temp_f}/rinfo_formatted.txt
+	#Line before 13/9/2018: grep -av "^${ri_header_identifier}" ${folder_to_analyze}/${ri_file_name}|perl -pe 's/,/\t/g'|perl -pe 's/ //g'|awk -F "\t" -v awk_dataidx_col_no=$dataidx_col_no -v awk_ringshell_col_no=$ringshell_col_no -v awk_ringage_col_no=$ringage_col_no '{print $awk_dataidx_col_no"\t"$awk_ringshell_col_no"\t"$awk_ringage_col_no}' > ${temp_f}/rinfo_formatted.txt
+	
+
+	#Uniformize column number
+	bash ${req_files_folder}/uniformize_col_no.txt ${temp_f}/rinfo_formatted.txt 1 y temp_file.txt y
+	mv temp_file.txt ${temp_f}/rinfo_formatted.txt
+
+	#rinfo_formatted.txt
+	#204     21      1
+	#365     20      2
+	#568     19      3
+	#797     18      4
+	#1050    17      5
+	#1255    16      6
+	#1462    15      7
+	#1677    14      8
+		#Col. 1: DataIdx
+		#Col. 2: RingShell
+		#Col. 3: RingAge
+
+	
+	
+	if [ $test -eq 1 ]
+	then
+		echo "Ring infos"
+		head ${temp_f}/rinfo_formatted.txt|perl -pe 's/^/\t/g'
+		#echo
+		#printf "\tIndex column number (index_col_no_ri): ${index_col_no_ri}\n"
+	fi
+	
+
+			
+
+	printf "" > ${temp_f}/current_sample_rings_and_transitions.txt #(file DEF)
+	ring_first_index=0 #Resets the index no to 0
+	
+	
+	
+	
+	#Variables regarding ring number and count
+	
+	#nb_of_rings: 		the total number of rings present in the rinfo_formatted.txt file. Note that any "false ring" (see: last_ring_is_false_ring) will have been removed from that count.
+	#ring_counter:		Number of current ring analyzed in the ring info file. Always incremented as 1,2,3,4,5... independently of any other considerations.
+	#ring_no_ptb_auto:	the automated ring numbering from PITH to bark
+	#				Will normally start from 1 (first ring) and increase
+	#				In special cases where the first ring is the PITH, will start with 0 as the first ring number.
+	#ring_no_btp_auto:	the automated ring numbering from BARK to pith
+	#				When the last ring is considered incomplete (default), will start as nb_of_rings - 1 and decrease
+	#				When last ring is complete, or there are extra reads in *_properties.csv file compared to the *_ring_info.csv file, will start as nb_of_rings and decrease
+	#ring_no_ptb_rifile:	The PITH to bark numbering as read from the *_ring_info.csv file. Usually starts at 1 and increases. Occasionally starts at 2 or 3 (see FPI01 project on 331 conifers).
+	#ring_no_btp_rifile:	The BARK to pith numbering as read from the *_ring_info.csv file. Usually ends at 0, indicating an incomplete last ring.
+	#ring_no_ptb:		The PITH to bark ring numbering in use, selected either from ring_no_ptb_rifile or ring_no_ptb_auto, according to ring_numbering_method_p2b (1=rifile = preferred, 2=auto)
+	#ring_no_btp:		The BARK to pith ring numbering in use, selected either from ring_no_btp_rifile or ring_no_btp_auto, according to ring_numbering_method_b2p (1=rifile, 2=auto = preferred)
+	
+	#Examples:
+	#1. Sample where the first read is the first non-pith material, and last ring is incomplete (MOST cases)
+	#	
+	#	nb_of_rings=5
+	#
+	#	ring_counter	ring_no_ptb_auto	ring_no_btp_auto
+	#	1			1				4
+	#	2			2				3
+	#	3			3				2
+	#	4			4				1
+	#	5			5				0		<===incomplete ring
+	#
+	#2. Sample where the first read is in pith center, and last ring is incomplete (SPECIAL cases)
+	#	
+	#	nb_of_rings=5
+	#
+	#	ring_counter	ring_no_ptb_auto	ring_no_btp_auto
+	#	1			0				4
+	#	2			1				3
+	#	3			2				2
+	#	4			3				1
+	#	5			4				0		<===incomplete ring
+
+	
+	
+	
+	#Count number of rings
+	let nb_of_rings=$(cat ${temp_f}/rinfo_formatted.txt|wc -l)
+	
+	
+	#Ring counter
+	ring_counter=1
+	
+	#If first ring IS the pith (SPECIAL CASES), auto-numbering from pith to bark will start with 0.
+	if [ ${first_ring_is_the_pith} -eq 2 ]
+	then
+		ring_no_ptb_auto=0	#Represents the pith, will start with 0
+	else
+		ring_no_ptb_auto=1 #Will start normally with 1
+	fi
+	
+
+
+
+
+	
+	#Add a calculated ring width to the ${temp_f}/rinfo_formatted.txt file, to get an average ring width. This will be used to check for abnormal ring widths.
+	#1. Add ring end position, simply by multiplying last index by 0.025 (step)
+	awk -F "\t" -v astep=${step} '{print $0"\t"$1*astep}' ${temp_f}/rinfo_formatted.txt > ${temp_f}/temp_file.txt
+	mv ${temp_f}/temp_file.txt ${temp_f}/rinfo_formatted.txt
+	#2. Shift each ring's last position to the row below (next ring) and add 0.025 (step). This will represent first position in that next ring.
+	#3. Then substract first position from last position, which will give width.
+	bash ${req_files_folder}/copy_shifted_columns.txt ${temp_f}/rinfo_formatted.txt -0.025 4 1|awk -F "\t" -v astep=${step} '{print $1"\t"$2"\t"$3"\t"$5+astep"\t"$4}'|awk -F "\t" '{print $0"\t"$5-$4}' > ${temp_f}/temp_file.txt
+	mv ${temp_f}/temp_file.txt ${temp_f}/rinfo_formatted.txt
+	#
+	#144		16	1	0		3.6		3.6
+	#304		15	2	3.625	7.6		3.975
+	#443		14	3	7.625		11.075	3.45
+	#615		13	4	11.1		15.375	4.275
+	#824		12	5	15.4		20.6		5.2
+	#1012	11	6	20.625	25.3		4.675
+	#1239	10	7	25.325	30.975	5.65
+	#1388	9	8	31		34.7		3.7
+	#1549	8	9	34.725	38.725	4
+	#1716	7	10	38.75		42.9		4.15
+	#1891	6	11	42.925	47.275	4.35
+	#2033	5	12	47.3		50.825	3.525
+	#2121	4	13	50.85	53.025	2.175
+	#2178	3	14	53.05	54.45		1.4
+	#2298	2	15	54.475	57.45		2.975
+	#2386	1	16	57.475	59.65		2.175
+	#Col 1: last index
+	#Col 2: ring no bark to pith
+	#Col 3: ring no pith to bark
+	#Col 4: ring first position
+	#Col 5: ring last position
+	#Col 6: ring width
+	
+	#Get the median value for ring width (4/6/2018)
+	cut -f6 ${temp_f}/rinfo_formatted.txt > ${temp_f}/current_sample_ring_widths.txt
+	fnct_get_median_value ${temp_f}/current_sample_ring_widths.txt
+	median_ring_width=${median_value}
+	
+	
+	
+	#12/6/2018
+	#Check if there are more reads in wp file compared to last ring's index in ri file
+	#If yes, set the value of extra_reads_in_wp_vs_ri to 1. 
+	#	This means that the last ring is not included in the ri file.
+	#	That last incomplete ring will be treated further ahead in the script.
+	#If no, last ring is included in the ri file.
+	current_sample_last_index_value_ri=$(cut -f1 ${temp_f}/rinfo_formatted.txt|sort -n|tail -1)
+	if [ ${current_sample_last_index_value_ri} -lt ${current_sample_last_index_value_wp} ]
+	then 
+		printf "${yellow_color}Note: extra reads in wood properties files compared to ring info file.${normal_color}.\n";
+		extra_reads_in_wp_vs_ri=1
+	else 
+		printf "Note: no extra reads in wood properties files compared to ring info file.\n";
+		extra_reads_in_wp_vs_ri=0
+	fi
+	
+#exit 0
+
+	#--------------------------------------------------------------------------------------------------------------------
+	#Read every line of the ring_info formatted file
+	#--------------------------------------------------------------------------------------------------------------------
+	for line in $(cat ${temp_f}/rinfo_formatted.txt)
+	do
+		#Extract index, ring number pith to bark, ring number bark to pith
+		#Previous version (before 15/2/2012):ring_last_index=$(echo ${line}|perl -pe 's/^(\d+)\t\d+\t\d+/\1/g')
+		ring_last_index=$(echo ${line}|cut -f1)
+		
+		#Ring width (NEW: 4/6/2018)
+		ring_width=$(echo ${line}|cut -f6)
+
+			
+		#Ring numbers automatically given by incrementation/decrementation
+			
+			#Pith to bark (ring_no_ptb_auto): initially defined above, and incremented at the end of the loop.
+			
+			
+			#Bark to pith
+			#If there are no extra reads in wp file vs ri, and last ring is considered as incomplete, the last ring will have the number 0
+			if [ ${extra_reads_in_wp_vs_ri} -eq 0 ] && [ ${last_ring_is_incomplete} -eq 1 ]
+			then
+				let ring_no_btp_auto=nb_of_rings-ring_counter
+			else
+				let ring_no_btp_auto=nb_of_rings-ring_counter+1
+			fi
+		
+		
+    
+		#Ring numbers read from the ring_info file
+		#Note: sometimes, the first ring doesn't start at 1
+		ring_no_btp_rifile=$(echo ${line}|cut -f2)
+		ring_no_ptb_rifile=$(echo ${line}|cut -f3)
+		
+
+		#[NEW 21/6/2018]
+		#Choice of PITH to bark ring numbering according to the ring_numbering_method_p2b variable:
+		#	1. use pith-to-bark (RingAge) numbers provided in the *_ring_info.file.
+		#	2. use auto-incremented ring numbers.
+		if [ ${ring_numbering_method_p2b} -eq 1 ]
+		then
+			ring_no_ptb=${ring_no_ptb_rifile}
+		else
+			ring_no_ptb=${ring_no_ptb_auto}
+		fi
+		
+		#Choice of BARK to pith ring numbering according to the ring_numbering_method_b2p variable:
+		#	1. use bark-to-pith (RingShell) numbers provided in the *_ring_info.file.
+		#	2. use auto-decremented ring numbers.
+		if [ ${ring_numbering_method_b2p} -eq 1 ]
+		then
+			ring_no_btp=${ring_no_btp_rifile}
+		else
+			ring_no_btp=${ring_no_btp_auto}
+		fi
+		
+		
+		
+		#*********************************
+		#For testing only
+		#if [ $ring_no_ptb -eq 6 ]; then break;fi
+		#*********************************
+    
+    
+		#echo ${ring_first_index},${ring_last_index},${ring_no_ptb},${ring_no_btp}
+
+		printf "Ring ${ring_no_ptb} from pith ($(if [ ${ring_numbering_method_p2b} -eq 1 ];then printf "ri file";else printf "auto"; fi)), ${ring_no_btp} from bark ($(if [ ${ring_numbering_method_b2p} -eq 1 ];then printf "ri file";else printf "auto"; fi))\n------\n"
+
+		#Added 13/9/2018:
+		#	If first ring is the pith (first_ring_is_the_pith=2), the pith to bark numbering starts from 0, where 0 is the pith
+		if [ ${first_ring_is_the_pith} -eq 2 ] &&  [ ${ring_no_ptb} -eq 0 ]
+		then
+			printf "${yellow_color}\tFirst ring represents the PITH (special protocol). Its data is included in the final results, but it is given a pith to bark ring number of 0.\n${normal_color}"
+		fi
+		
+		
+		
+		
+		#Check if ring width is beyond limits (width < median_width/factor 	or 	width > median_width*factor) (4/6/2018). If not, warn but continue.
+		if [ $(printf "${ring_width}\t${median_ring_width}\t${limit_ring_width_factor}\n"|awk -F "\t" '{print $1"\t"$2/$3"\t"$2*$3}'|awk -F "\t" '{if ($1 < $2 || $1 > $3) print}'|wc -l) -gt 0 ]
+		then
+			printf "${sample_name}\t${ring_no_ptb}\tW32\n" >> ${temp_f}/${err_warn_f}/${rings_err_j}	#Added 4/6/2018
+			printf "${yellow_color}\tWarning: Ring width (${ring_width}) is at least ${limit_ring_width_factor} (limit_ring_width_factor) times smaller or larger than the median ring width (${median_ring_width}).${normal_color}\n"
+
+		fi
+
+		
+		#---------------------------------------------------------------------------------------------------------------------------------------------------
+		#EXTRACT DATA FROM WOOD PROPERTIES FILE FOR EACH RING (between first and last index)
+		#---------------------------------------------------------------------------------------------------------------------------------------------------
+		#Extract a block of lines from current_sample_temp_file_A.txt corresponding to each ring's start and end index, with columns 'index' and 'density'
+  
+		#Define the starting and ending lines to extract
+	
+		#Find the first line where index number (located at column index_col_no_wp) >= ring_first_index
+			#[New line 20180108]: get the first line where index >= the first index for the current ring.
+			#This avoids an empty string in case there are missing indexes from the properties file.
+			#e.g. sample 20055 of the E560D population (492) trees. Ring #9 is supposed to start at index 832, but indexes (reads) 832 and 833 are missing
+			#Hence, the line will get the index 834, which equates to line #833 of the ${temp_f}/current_sample_temp_file_A.txt file
+			starting_line=$(awk -F "\t" -v icn=${index_col_no_wp} -v rfi=${ring_first_index} '{if($icn >= rfi) print NR}' ${temp_f}/current_sample_temp_file_A.txt|head -1)
+			
+		
+		#Find the line number where index number (located at column index_col_no_wp) <= ring_last_index
+			#[New line 20180108]: get the last line where index <= the last index for the current ring.
+			#This avoids an empty string in case there are missing indexes from the properties file.
+			ending_line=$(awk -F "\t" -v icn=${index_col_no_wp} -v rli=${ring_last_index} '{if($icn <= rli) print NR}' ${temp_f}/current_sample_temp_file_A.txt|tail -1)
+			
+		
+		#Calculate the total number of reads for current ring
+		#Note: this will include any read with incorrect value densities
+		let nb_of_reads=${ending_line}-${starting_line}+1
+
+
+		#Add check for minimal number of reads per ring here
+		#if [ ${nb_of_reads} -lt ${min_nb_of_reads_per_ring} ]
+		#then
+		#	***************************
+		#fi
+
+
+		#echo	
+		#echo ring_first_index $ring_first_index
+		#echo ring_last_index $ring_last_index
+		#echo starting_line $starting_line
+		#echo ending_line $ending_line
+		#echo nb_of_reads $nb_of_reads
+		#echo index_col_no_wp $index_col_no_wp
+		#echo density_col_no $density_col_no
+		#exit
+		
+		
+		#Extract index and density from current_sample_temp_file_A.txt for those lines
+		#Note that the decimal point and trailing 0's are removed because an integer is needed for calculations below
+		sed -n ${starting_line},${ending_line}p ${temp_f}/current_sample_temp_file_A.txt|awk -F "\t" -v awk_index_col_no_wp=$index_col_no_wp -v awk_density_col_no=$density_col_no '{print $awk_index_col_no_wp"\t"$awk_density_col_no}'|perl -pe 's/\.\d*//g' > ${temp_f}/current_ring_indexes_density.txt
+			
+			#current_ring_indexes_density.txt
+			#(index)	(density)
+			#\/		\/
+			#2404	311
+			#2405	331
+			#2406	331
+		
+		
+		#Remove any wrong density values and keep the cleaned and ordered densities for the purpose of stats (min/max/average/median) calculations
+		#-----------------------------------------------------------------------------------
+		#List any non-numerical values, including the empty string and negative values (new: 29/5/2018)
+		awk -F "\t" '{if ($2 !~ /^[0-9]*\.?[0-9]*$/ || $2 == "") print}' ${temp_f}/current_ring_indexes_density.txt|sort -k1,1n > ${temp_f}/current_ring_indexes_density_non-numeric.txt
+			#If there are such values, write a warning code:
+			if [ -s ${temp_f}/current_ring_indexes_density_non-numeric.txt ]
+			then
+				printf "${sample_name}\t${ring_no_ptb}\tW22\n" >> ${temp_f}/${err_warn_f}/${rings_err_j} #Added 29/5/2018
+				printf "${yellow_color}\tWood properties file has non-numeric density values. These values will be ignored for min/max/avg/median density calculations, but will be kept in the final file.${normal_color}\n"
+			fi
+		
+		#List numeric values only. This includes values with decimal points (new: 29/5/2018)
+		awk -F "\t" '{if ($2 ~ /^[0-9]*\.?[0-9]*$/ && $2 != "") print $0}' ${temp_f}/current_ring_indexes_density.txt|sort -k1,1n > ${temp_f}/current_ring_indexes_density_numeric.txt
+	
+		#List any density values OUTSIDE boundaries specified by $min_allowed_density and $max_allowed_density
+		awk -F "\t" -v dmin=${min_allowed_density} -v dmax=${max_allowed_density} '{if ($2 < dmin || $2 > dmax ) print $0}' ${temp_f}/current_ring_indexes_density_numeric.txt|sort -k1,1n > ${temp_f}/current_ring_indexes_density_numeric_outside_boundaries.txt
+			#If there are such values, write a warning code:
+			if [ -s ${temp_f}/current_ring_indexes_density_numeric_outside_boundaries.txt ]
+			then
+				printf "${sample_name}\t${ring_no_ptb}\tW23\n" >> ${temp_f}/${err_warn_f}/${rings_err_j} #Added 29/5/2018
+				printf "${yellow_color}\tWood properties file has density values oustide permitted range ($min_allowed_density, $max_allowed_density). These values will be ignored for min/max/avg/median density calculations, but will be kept in the final file.${normal_color}\n"
+
+			fi
+	
+		#List densities within boundaries
+		awk -F "\t" -v dmin=${min_allowed_density} -v dmax=${max_allowed_density} '{if ($2 >= dmin && $2 <= dmax ) print $0}' ${temp_f}/current_ring_indexes_density_numeric.txt|sort -k1,1n > ${temp_f}/current_ring_indexes_density_numeric_within_boundaries.txt
+		
+		#Numerically sort the density values within boundaries (29/5/2018)
+		awk -F "\t" '{print $2}' ${temp_f}/current_ring_indexes_density_numeric_within_boundaries.txt|sort -n > ${temp_f}/current_ring_clean_density_ordered.txt
+		#Reads remaining after outside-range density values were removed
+		nb_of_clean_dens_reads=$(cat ${temp_f}/current_ring_clean_density_ordered.txt|wc -l)
+		
+		
+		
+		
+		#Check if transition can be calculated or not
+		#-----------------------------------------------------------------------------------
+		#1. If ring has less than ${min_nb_of_reads_for_transition} (typically 10 reads)			---> DO NOT CALCULATE TRANSITION
+		#2. If this is the last ring (last ring in ring info file and no extra reads in wp vs ri)
+		#	If last ring  considered incomplete by default (last_ring_is_incomplete=1)			---> DO NOT CALCULATE TRANSITION
+		
+		#By default, calculate the transition.
+		calculate_transition="yes"
+		
+		#1) If number of reads < required number of reads for transition calculation
+		if [ ${nb_of_reads} -lt ${min_nb_of_reads_for_transition} ]
+		then
+			calculate_transition="no"
+			printf "${sample_name}\t${ring_no_ptb}\tW29\n" >> ${temp_f}/${err_warn_f}/${rings_err_j} #Added 1/6/2018
+			printf "${yellow_color}\tWarning: Insufficient reads (${nb_of_reads}) to calculate transition.${normal_color}\n"
+		fi
+
+		#2) If number of CLEAN DENSITY reads < required number of reads for transition calculation
+		if [ ${nb_of_clean_dens_reads} -lt ${min_nb_of_reads_for_transition} ]
+		then
+			calculate_transition="no"
+			printf "${sample_name}\t${ring_no_ptb}\tW34\n" >> ${temp_f}/${err_warn_f}/${rings_err_j} #Added 4/7/2018
+			printf "${yellow_color}\tWarning: Insufficient reads (${nb_of_clean_dens_reads}) after removal of outside-rand density values (<${min_allowed_density} km/m3 or >${max_allowed_density} km/m3) to calculate transition.${normal_color}\n"
+		fi
+
+		#3) If this is the last ring: i) last ring IN THE RING INFO FILE; and ii) no extra reads afterwards in the wp file
+		if [ ${ring_counter} -eq ${nb_of_rings} ] && [ ${extra_reads_in_wp_vs_ri} -eq 0 ]
+		then
+			printf "$\tNote: This is the last ring, no extra reads after it.\n"
+			
+
+			#[Changed 21/6/2018]: 
+			#	No longer looking at RingShell=0 to see if this is the last ring, when no extra reads are in wp vs ri...
+			#		...because RingShell is not always=0 even when it is the last ring.
+			#	Only looking at the last_ring_is_incomplete variable.
+			
+			#If the last ring is by default considered incomplete (last_ring_is_incomplete=1), do not calculate transition
+			if [ ${last_ring_is_incomplete} -eq 1 ]
+			then	
+				calculate_transition="no"
+				printf "${sample_name}\t${ring_no_ptb}\tW33\n" >> ${temp_f}/${err_warn_f}/${rings_err_j} #Added 1/6/2018
+				printf "${yellow_color}\tWarning: Last ring is considered incomplete by default (last_ring_is_incomplete=${last_ring_is_incomplete}), transition will not be calculated.${normal_color}\n"
+				
+				#Add this to the incomplete_rings.txt file
+				printf "${sample_name}\t${ring_no_ptb}\t${data_source_id}\tAutomatically flagged by Unix script ${0} on $(date +%Y-%m-%d) as an incomplete ring because it is the last one (last_ring_is_incomplete=1 indicates all last rings are incomplete).\t\\N\n" >> ${final_files_folder}/incomplete_rings.txt
+			
+			fi
+			
+		fi
+		
+		
+		
+		
+		#If above exceptions were encountered, DO NOT calculate transition
+		if [ ${calculate_transition} == "no" ]
+		then
+			
+			#Simply add the ring no pith to bark, ring no bark to pith, and \N to the current_ring_indexes_density.txt to generate current_ring_transitions.txt
+			awk -v awkvar1=${ring_no_ptb} -v awkvar2=${ring_no_btp} -F "\t" '{print $0"\t"awkvar1"\t"awkvar2"\t\\N"}' ${temp_f}/current_ring_indexes_density.txt > ${temp_f}/current_ring_transitions.txt
+			
+			min_dens="-"
+			max_dens="-"
+			median_dens="-"
+			mid_range_dens="-"
+			avg_dens="-"
+			latewood_start_index="-"
+			
+		else #Ring is OK, calculate the transition
+					
+			
+			#Calculate the min and max densities
+				
+				#Note: ${temp_f}/current_ring_clean_density_ordered.txt is already numerically ordered
+				min_dens=$(head -1 ${temp_f}/current_ring_clean_density_ordered.txt)	#e.g. 288 		#Line before 31/5/2018: min_dens=$(awk 'min=="" || $2 < min {min=$2} END{ print min}' FS="\t"  ${temp_f}/current_ring_indexes_density.txt )
+				max_dens=$(tail -1 ${temp_f}/current_ring_clean_density_ordered.txt)	#e.g. 968		Line before 31/5/2018: max_dens=$(awk 'max=="" || $2 > max {max=$2} END{ print max}' FS="\t" ${temp_f}/current_ring_indexes_density.txt  )
+			
+			#Get the mid-range ( (densMin + densMax)/2 ) density value (28/5/2018)
+				mid_range_dens=$(echo "scale=1;(${min_dens}+${max_dens})/2"|bc)	#e.g.: 628.0
+				
+			#Get the average density value (31/5/2018)
+				avg_dens=$(awk -F "\t" 'BEGIN { somme=0; } { somme+=$1; } END { print somme/NR;}' ${temp_f}/current_ring_clean_density_ordered.txt)	#e.g: 683.379
+	
+			#Get the median density (7/3/2016):
+				#Line at which the first density value will be used to caculate median density (even number of densities), or will become the median density itself (odd number of densities).
+				#Note: if number of lines is even, will start exactly at number of lines/2 (e.g. 20 ---> 10), if odd, will start at rounded up value of lines/2 (e.g. 5/2 =2.5 ---> 3)
+				
+				#NOTE: before 31/5/2018: The file was sorted by indexes, not densities!!! The median was thus erroneously obtained!
+				
+				#The commented lines below can be removed since we now (4/6/2018) use a function
+				#	#First (or only) median density value. First of 2 in case where number of densities is even, only density values when number of densities is odd.
+				#	md_density_starting_line=$(echo "scale=1;${nb_of_clean_dens_reads}/2"|bc|awk '{printf("%d\n",$1 + 0.5)}')
+				#	#Line before 31/5/2018: md_density_starting_line=$(echo "scale=1;${nb_of_reads}/2"|bc|awk '{printf("%d\n",$1 + 0.5)}')
+					
+				#	let md_density_ending_line=md_density_starting_line+1 #2nd density read line in case of even number of reads
+					
+				#	md_dens1=$(sed -n ${md_density_starting_line}p ${temp_f}/current_ring_clean_density_ordered.txt) #First density read
+				#	md_dens2=$(sed -n ${md_density_ending_line}p ${temp_f}/current_ring_clean_density_ordered.txt) #Second density read (needed only in case of even number of reads)
+			
+				#	#Lines before 31/5/2018
+				#	#md_dens1=$(sed -n ${md_density_starting_line}p ${temp_f}/current_ring_indexes_density.txt|cut -f2) #First density read
+				#	#md_dens2=$(sed -n ${md_density_ending_line}p ${temp_f}/current_ring_indexes_density.txt|cut -f2) #Second density read (needed only in case of even number of reads)
+			
+
+				#	#Calculate median density			
+				#	if [ $((nb_of_clean_dens_reads%2)) -eq 0 ]
+				#	then #even number of densities, thus median is the average of the two center ones
+				#		#echo "pair"
+				#		median_dens=$(echo "scale=3;(${md_dens1}+${md_dens2})/2"|bc)		#e.g.: 679.0
+				#	else #odd number of densities, thus median is the one at the center
+				#		#echo "impair"
+				#		median_dens=${md_dens1}
+				#	fi
+
+				
+				#Now gets the median value with the function, which returns it into the median_value variable (4/6/2018)
+				fnct_get_median_value ${temp_f}/current_ring_clean_density_ordered.txt
+				median_dens=${median_value}
+			
+			#Transition density obtained from one of the methods below (NEW: 31/5/2018):
+			#1. Mid-range value method
+			#2. Median value method
+			
+			case $ewlw_transition_method in
+			1)	#Mid-range
+				transition_dens=${mid_range_dens}
+				transition_method="Mid-range"
+				;;
+			2)	#Median
+				transition_dens=${median_dens}
+				transition_method="Median"
+				;;
+			
+			*)	#Any other value = Mid-range (DEFAULT)
+				transition_dens=${mid_range_dens}
+				transition_method="Mid-range"
+				;;
+			
+			esac
+			
+			
+			#Show the different stats (1/6/2018)
+			printf "\tDensities: MIN/MAX/AVG/MEDIAN/MID-RANGE\t\t${min_dens}/${max_dens}/${avg_dens}/${median_dens}/${mid_range_dens}\t Chosen transition: ${transition_dens} (${transition_method})\n"
+			
+				
+			#For testing purposes, display the indexes and densities, plus min_dens/max/median_dens calculations
+			#cat <(printf "\n\nRing # ${ring_no_ptb}\n------------------\n\n") current_ring_indexes_density.txt <(printf "\n----------\nRing number: ${ring_no_ptb}, Start index: ${ring_first_index}, End index: ${ring_last_index}, Minimal density: ${min_dens}, Maximal density: ${max_dens}, median_dens: ${median_dens}\n")
+			#read -p "============================="
+
+
+			
+			#Copy twice the 'density' column, one shifted up by 1 pos, the other shifted up by 2, to compare actual density with next and second next line densities
+				bash ${req_files_folder}/copy_shifted_columns.txt ${temp_f}/current_ring_indexes_density.txt "0" 2 -1 2 -2 > ${temp_f}/temp_transition_calc_A.txt
+				#temp_transition_calc_A.txt
+				#(index)	(density)	(density next)		(density 2nd next)	
+				#\/		\/		\/			\/
+				#2404	311		331			331
+				#2405	331		331			355
+				#2406	331		355			343
+			
+			
+			
+			#Add line numbers, transition_dens, ring_no_ptb, ring_no_btp columns
+			cat -n ${temp_f}/temp_transition_calc_A.txt|perl -pe "s/(.+)/\1\t${transition_dens}\t${ring_no_ptb}\t${ring_no_btp}/g" > ${temp_f}/temp_transition_calc_B.txt
+			#Line before 31/5/2018: cat -n ${temp_f}/temp_transition_calc_A.txt|perl -pe "s/(.+)/\1\t${median_dens}\t${ring_no_ptb}\t${ring_no_btp}/g" > ${temp_f}/temp_transition_calc_B.txt
+		    
+		    
+			#File now has the following columns:
+			#     	1	0	288	288	296	628.0	1	16
+			#    	2	1	288	296	311	628.0	1	16
+			#   	3	2	296	311	321	628.0	1	16
+			#     	4	3	311	321	332	628.0	1	16
+			#	5	4	321	332	342	628.0	1	16
+			#Col1: LINE NUMBER (NOT INDEX) - could be useful to exclude some reads (eg. first or last few reads) in the prediction of transition from early to latewood
+			#Col2: Index
+			#Col3: Density                                          
+			#Col4: Next line density                             
+			#Col5: Second next line density                   
+			#Col6: Transition density                 
+			#Col7: Ring number (pith to bark)
+			#Col8: Ring number (bark to pith)
+					  
+	
+		    
+			#For testing purposes
+			#echo "--Transition to latewood happens on that line----------------------"
+			#cat temp_transition_calc_B.txt|awk -F '\t' '{if ($3 < $6) {if ($4 >= $6) {if ($5>=$6) {print}}}}' |head -1                         
+			#echo "-------------------------------------------------------------------"
+		    
+			#Find where latewood starts according to that rule:
+			#Latewood begins at the first line where: 
+			# 1) density reading < transition density, AND
+			# 2) next line density reading >= transition density, AND
+			# 3) second next line density reading >= transition density
+			
+			#List all possible EW/LW transitions
+			cat ${temp_f}/temp_transition_calc_B.txt|awk -F '\t' '{if ($3 < $6) {if ($4 >= $6) {if ($5>=$6) {print}}}}' > ${temp_f}/current_ring_possible_transitions.txt
+			#	54	53	615	633	635	628.0	1	16
+			#	60	59	627	635	630	628.0	1	16
+			#	69	68	627	633	634	628.0	1	16
+			#NOTE: column 1 = LINE NUMBER, column 2 = INDEX.
+			
+			transitions_count=$(cat ${temp_f}/current_ring_possible_transitions.txt|wc -l)
+			
+			
+			#No transition point found!
+			if [ ${transitions_count} -eq 0 ]
+			then
+				latewood_start_index="NULL"
+				
+				printf "${sample_name}\t${ring_no_ptb}\tW26\n" >> ${temp_f}/${err_warn_f}/${rings_err_j} #Added 31/5/2018
+				
+				printf "${yellow_color}\tWarning: No transition between early and latewood found.${normal_color}\n"
+				
+				
+			
+			#If only one transition was found
+			elif [ ${transitions_count} -eq 1 ]
+			then
+			
+				latewood_start_index=$(cut -f2 ${temp_f}/current_ring_possible_transitions.txt)	#Column #2 = INDEX (column #1 = LINE NUMBER).
+						
+			#Multiple transitions were found
+			else
+				
+				printf "${sample_name}\t${ring_no_ptb}\tW27\n" >> ${temp_f}/${err_warn_f}/${rings_err_j} #Added 31/5/2018
+				
+				printf "${yellow_color}\tWarning: ${transitions_count} earlywood/laewood transitions found. "
+				
+				#Copy the multiple transitions to a file
+				cp ${temp_f}/current_ring_possible_transitions.txt ${temp_f}/${err_warn_f}/${sample_name}_Ring${ring_no_ptb}_possible_transitions.txt
+				
+				
+				#Transition to choose when multiple transitions are found
+				#1. Keep the last encountered (closest to bark end) - DEFAULT
+				#2. Keep the first (closest to pith end)
+				
+				case $multiple_transitions_option in
+				1)	#Keep the last encountered (closest to bark end)
+					latewood_start_index=$(cut -f2 ${temp_f}/current_ring_possible_transitions.txt|tail -1)	#Column #2 = INDEX (column #1 = LINE NUMBER).
+					printf "The LAST one is kept.${normal_color}\n"
+					;;
+				2)	#Keep the first (closest to pith end)
+					latewood_start_index=$(cut -f2 ${temp_f}/current_ring_possible_transitions.txt|head -1)	#Column #2 = INDEX (column #1 = LINE NUMBER).
+					printf "The FIRST one is kept.${normal_color}\n"
+					;;
+				
+				*)	#Any other value = Keep the last encountered (closest to bark end)
+					latewood_start_index=$(cut -f2 ${temp_f}/current_ring_possible_transitions.txt|tail -1)	#Column #2 = INDEX (column #1 = LINE NUMBER).
+					printf "The LAST one is kept.${normal_color}\n"
+					;;
+				
+				esac
+			
+			
+				#Line before 31/5/2018: latewood_start_index=$(cat ${temp_f}/temp_transition_calc_B.txt|awk -F '\t' '{if ($3 < $6) {if ($4 >= $6) {if ($5>=$6) {print}}}}' |head -1|cut -f2)
+			
+			
+			fi
+			
+			
+	    
+			#Add the latewood_start_index as column #9
+			cat ${temp_f}/temp_transition_calc_B.txt|perl -pe "s/(.+)/\1\t${latewood_start_index}/g" > ${temp_f}/temp_transition_calc_C.txt
+			#temp_transition_calc_C.txt:
+			#	1  0       288     288     296     628.0   1       16      68
+			#	2  1       288     296     311     628.0   1       16      68
+			#	3  2       296     311     321     628.0   1       16      68
+			#	4  3       311     321     332     628.0   1       16      68
+			#	5  4       321     332     342     628.0   1       16      68
+			#	6  5       332     342     352     628.0   1       16      68
+			#	7  6       342     352     356     628.0   1       16      68
+			#	8  7       352     356     353     628.0   1       16      68
+			#	9  8       356     353     355     628.0   1       16      68
+			#	10  9       353     355     361     628.0   1       16      68
+			#(...)
+			
+			#Col1: Line number                                      ===> to be discarded
+			#Col2: Index
+			#Col3: Density                                          
+			#Col4: Next line density                             ===> to be discarded
+			#Col5: Second next line density                   ===> to be discarded
+			#Col6: Transition density (median, mid-range or other)                 ===> to be discarded
+			#Col7: Ring number (pith to bark)
+			#Col8: Ring number (bark to pith)
+			#Col9: Latewood start index                       ===> to be discarded
+			
+			#Add transition as column #10 (1=earlywood, 2=latewood), and keep only columns 2,3,7,8,10
+			#When $latewood_start_index="NULL", it is put as "\N"
+			awk -F '\t' '{if ($9=="NULL") print $2"\t"$3"\t"$7"\t"$8"\t\\N"; else {if ($2 < $9) print $2"\t"$3"\t"$7"\t"$8"\t1"; else print $2"\t"$3"\t"$7"\t"$8"\t2"}}' ${temp_f}/temp_transition_calc_C.txt > ${temp_f}/current_ring_transitions.txt
+			
+			
+			#Check if %LW > $max_pct_lw_per_ring (1/6/2018)
+			ew_reads=$(awk -F "\t" '{if ($5 == 1) print}' ${temp_f}/current_ring_transitions.txt|wc -l)
+			lw_reads=$(awk -F "\t" '{if ($5 == 2) print}' ${temp_f}/current_ring_transitions.txt|wc -l)
+			lw_pct=$(echo "scale=3;${lw_reads}/${nb_of_reads}*100"|bc)
+			
+			printf "\t%% latewood: ${lw_pct}\n"
+			
+			if [ $(printf "${lw_pct}\t${max_pct_lw_per_ring}\n"|awk -F "\t" '{if($1 > $2) print}'|wc -l) -eq 1 ];
+			then 
+				printf "${sample_name}\t${ring_no_ptb}\tW31\n" >> ${temp_f}/${err_warn_f}/${rings_err_j} #Added 1/6/2018
+				printf "${yellow_color}\tWarning: Current ring latewood percent (${lw_pct}) is higher than what is allowed by max_pct_lw_per_ring (${max_pct_lw_per_ring}).${normal_color}\n"
+			
+			fi
+			
+			#Checks for min_nb_of_ew_reads
+			# if [ ${ew_reads} -lt ${min_nb_of_ew_reads} ]
+			#then
+			#	************
+			#	#Warn
+			#	#Set transition to \N for current ring
+			#fi
+			
+			#Checks for min_nb_of_lw_reads
+			# if [ ${lw_reads} -lt ${min_nb_of_lw_reads} ]
+			#then
+			#	************
+			#	#Warn
+			#	#Set transition to \N for current ring
+			#fi
+			
+			
+		fi
+		#current_ring_transitions.txt:
+		#0       288     1       16      1
+		#1       288     1       16      1
+		#2       296     1       16      1
+		#3       311     1       16      1
+		#(...)
+		#66      618     1       16      1
+		#67      626     1       16      1
+		#68      627     1       16      2
+		#69      633     1       16      2
+		#(...)
+		#140     841     1       16      2
+		#141     805     1       16      2
+		#142     773     1       16      2
+		#143     731     1       16      2
+		#144     698     1       16      2
+
+		#Col1: Index
+		#Col2: Density                                          
+		#Col3: Ring number (pith to bark)
+		#Col4: Ring number (bark to pith)
+		#Col5: Transition (1=early wood, 2=latewood, \N=no transition found)
+		     
+		   
+		#For testing purposes
+		#printf "\nSample: ${sample_name}, Ring no: ${ring_no_ptb}, 1st index: ${ring_first_index}, Last index: ${ring_last_index}, Min dens.: ${min_dens}, Max dens.: ${max_dens}, Median dens.: ${median_dens}, Latewood start index: ${latewood_start_index}\n"
+		#read -p "============================="
+		#cat current_ring_transitions.txt
+		#read -p "============================="
+
+
+		#Add info on that ring to all rings info file for that sample
+		cat ${temp_f}/current_ring_transitions.txt >> ${temp_f}/current_sample_rings_and_transitions.txt
+
+		#Add current ring info to a file containing all rings for all samples.
+		printf "${sample_name}\t${nb_of_rings}\t${ring_no_ptb}\t${ring_no_btp}\t${ring_first_index}\t${ring_last_index}\t${min_dens}\t${max_dens}\t${transition_dens}\t${latewood_start_index}\n" >> ${temp_f}/all_samples_ring_info.txt
+
+
+		#Next ring's first index is equal to current ring's last index +1
+		ring_first_index=ring_last_index+1
+	
+	
+		#Increment the ring counter
+		let ring_counter+=1
+		
+		#Increment the pith to bark auto number
+		let ring_no_ptb_auto+=1
+		
+	
+	
+	done # That ring is completed, go to next ring.
+
+
+	#All rings done for that sample
+	printf " ------\nAll rings completed.\n------\n"
+#exit
+
+
+
+	#Added 13/9/2018:
+	#	If first ring is the pith (first_ring_is_the_pith=2), warn about including all first rings in invalid_rings
+	if [ ${first_ring_is_the_pith} -eq 2 ]
+	then
+		printf "${yellow_color}All first rings (ring_no_p2b=0) in the current dataset represent the PITH (special protocol).\n"
+		printf "They are included in the final results, but should be put in invalid_rings.\n${normal_color}"
+	fi
+
+
+
+
+	#Add the ring and early/latewood delimitations file for all rings (current_sample_rings_and_transitions.txt) to properties file (current_sample_temp_file_A.txt)
+	#CAUTION: the paste command ADDS A TAB to EVERY ROW of file 1, EVEN WHEN file 2 has less rows.
+	#current_sample_temp_file_A.txt
+	#	0	0	612	20.6	25.7	323	1893	-26.8	-40.6	34.1	0.135	6.5	2.63	286	2.25	0.127		52083
+	#	1	0.025	623	21.3	25.3	335	1858	-26.8	-40.6	34.1	0.135	6.5	2.72	278	2.25	0.127	52083
+	#	2	0.05	628	21.1	25.2	333	1883	-26.8	-40.7	34.1	0.135	6.5	2.72	278	2.25	0.127		52083
+	#	3	0.075	632	20.6	24.7	321	1967	-26.9	-40.7	34.1	0.135	6.5	2.68	282	2.25	0.127	52083
+	#	4	0.1	643	20.5	24.1	318	2020	-26.9	-40.7	34.1	0.135	6.5	2.7	281	2.25	0.127		52083
+	#	5	0.125	642	20.2	23.6	306	2096	-26.9	-40.7	34.1	0.135	6.5	2.65	286	2.25	0.127		52083
+	#	6	0.15	639	20.1	23.1	298	2145	-26.9	-40.7	34.1	0.135	6.5	2.61	291	2.25	0.127		52083
+	#	7	0.175	654	20.3	22.9	305	2148	-26.9	-40.7	34.1	0.135	6.5	2.68	284	2.25	0.127		52083
+	#	8	0.2	673	19.9	23.3	312	2153	-26.9	-40.8	34.1	0.135	6.5	2.76	277	2.25	0.127		52083
+	#	9	0.225	675	20.2	24.2	329	2051	-27	-40.8	34.1	0.135	6.5	2.84	269	2.25	0.127	52083
+	#	(..., 17 columns)
+	
+	#current_sample_rings_and_transitions.txt
+	#	0	612	1	19	1
+	#	1	623	1	19	1
+	#	2	628	1	19	1
+	#	3	632	1	19	1
+	#	4	643	1	19	1
+	#	5	642	1	19	1
+	#	6	639	1	19	1
+	#	7	654	1	19	1
+	#	8	673	1	19	1
+	#	9	675	1	19	1
+	#	(..., 5 columns)
+
+	paste ${temp_f}/current_sample_temp_file_A.txt ${temp_f}/current_sample_rings_and_transitions.txt > ${temp_f}/current_sample_temp_file_B.txt
+	#[20180105]: remove trailing tabs, if any
+	perl -pe 's/\t\n/\n/g' ${temp_f}/current_sample_temp_file_B.txt > ${temp_f}/temp.txt
+	mv ${temp_f}/temp.txt ${temp_f}/current_sample_temp_file_B.txt
+	#current_sample_temp_file_B.txt
+	#	0	0	612	20.6	25.7	323	1893	-26.8	-40.6	34.1	0.135	6.5	2.63	286	2.25	0.127		52083	0	612	1	19	1
+	#	1	0.025	623	21.3	25.3	335	1858	-26.8	-40.6	34.1	0.135	6.5	2.72	278	2.25	0.127	52083	1	623	1	19	1
+	#	2	0.05	628	21.1	25.2	333	1883	-26.8	-40.7	34.1	0.135	6.5	2.72	278	2.25	0.127		52083	2	628	1	19	1
+	#	3	0.075	632	20.6	24.7	321	1967	-26.9	-40.7	34.1	0.135	6.5	2.68	282	2.25	0.127	52083	3	632	1	19	1
+	#	4	0.1	643	20.5	24.1	318	2020	-26.9	-40.7	34.1	0.135	6.5	2.7	281	2.25	0.127		52083	4	643	1	19	1
+	#	5	0.125	642	20.2	23.6	306	2096	-26.9	-40.7	34.1	0.135	6.5	2.65	286	2.25	0.127		52083	5	642	1	19	1
+	#	6	0.15	639	20.1	23.1	298	2145	-26.9	-40.7	34.1	0.135	6.5	2.61	291	2.25	0.127		52083	6	639	1	19	1
+	#	7	0.175	654	20.3	22.9	305	2148	-26.9	-40.7	34.1	0.135	6.5	2.68	284	2.25	0.127		52083	7	654	1	19	1
+	#	8	0.2	673	19.9	23.3	312	2153	-26.9	-40.8	34.1	0.135	6.5	2.76	277	2.25	0.127		52083	8	673	1	19	1
+	#	9	0.225	675	20.2	24.2	329	2051	-27	-40.8	34.1	0.135	6.5	2.84	269	2.25	0.127	52083	9	675	1	19	1
+	#(..., 22 columns)
+
+
+
+	#[20180105]
+	#Put in a file extra reads at the end (bark side) of the properties file, coming from:
+	#	1. any read which index no is > ring_last_index, that is, the last index of the last ring listed in the ring info file.
+	#	2. any read with <22 columns, meaning that the ring numbers and transitions were not added to these reads (from current_sample_rings_and_transitions.txt).
+	awk -F "\t" -v rli=${ring_last_index} '{if ($1 > rli && NF < 22) print}' ${temp_f}/current_sample_temp_file_B.txt > ${temp_f}/${err_warn_f}/${sample_name}_extra_reads_outside_rings_bark_side.txt
+	#NOTE: a variable already exists to state if there are extra reads in wp vs ri file: ${extra_reads_in_wp_vs_ri}.
+	#	However it is a binary switch (1 or 0), whereas the variable below stores the actual number of rows.
+	#	Also, the ${extra_reads_in_wp_vs_ri} variable doesn't consider the < 22 columns condition above.
+	extra_reads_bark_end=$(cat ${temp_f}/${err_warn_f}/${sample_name}_extra_reads_outside_rings_bark_side.txt|wc -l)
+	
+	#If reads were found
+	if [ $extra_reads_bark_end -gt 0 ]
+	then 
+		#Note (13/6/2018): used to be set to ${nb_of_rings}+1, but since there are sometimes gaps in rings numbering in the ring info file this was changed to ${ring_no_ptb}+1, which either comes from the file (ring_no_ptb_rifile), or from an auto-incremented number (ring_no_ptb_auto), see line ~ 1255.
+		let added_ring_no_p2b=${ring_no_ptb}+1
+		
+		
+		printf "\n"
+		
+		printf "${sample_name}\tW30\n" >> ${temp_f}/${err_warn_f}/${samples_err_j}
+		
+		printf "${yellow_color}\tThere are ${extra_reads_bark_end} reads at the end of the properties file which are not part of any ring into the ring info file.\n"
+		printf "\tThese reads will be considered as those of the last, incomplete ring.\n"
+		printf "\tHere they are:\n"
+		perl -pe 's/^/\t\t/g' ${temp_f}/${err_warn_f}/${sample_name}_extra_reads_outside_rings_bark_side.txt
+		printf "\tThe following field values will be set for those extra reads: Ring no (P2B): ${added_ring_no_p2b}, Ring no (B2P): 0, transition: \N\n${normal_color}"
+		
+		awk -F "\t" -v rli=${ring_last_index} -v arp2b=${added_ring_no_p2b} '{if ($1 > rli && NF < 22) print $0"\t"$1"\t"$3"\t"arp2b"\t0\t\\N";else print $0}' ${temp_f}/current_sample_temp_file_B.txt > ${temp_f}/current_sample_temp_file_C.txt
+	
+	
+		#Add this to the incomplete_rings.txt file
+		printf "${sample_name}\t${added_ring_no_p2b}\t${data_source_id}\tAutomatically flagged by Unix script ${0} on $(date +%Y-%m-%d) as an incomplete ring because it contains ${extra_reads_bark_end} extra reads from the wood properties file not present in the ring info file.\t\\N\n" >> ${final_files_folder}/incomplete_rings.txt
+
+	
+	else
+	
+		cp ${temp_f}/current_sample_temp_file_B.txt ${temp_f}/current_sample_temp_file_C.txt
+	
+	fi
+	
+
+
+
+
+	#Append this sample to the final file (all samples)
+	cat ${temp_f}/current_sample_temp_file_C.txt >> ${final_files_folder}/${out_ss_file}
+
+	echo
+  
+done #All files/samples done
+
+echo
+
+#exit
+	#Get the number of columns in ${out_ss_file}
+	#Note: if the number of columns is changing through the file (e.g. when only a few rings are calculated because a break is used in the for, the next line will return a value like this example: "18 22", which will cause an error for the rest of the script.
+	out_ss_file_col_count=$(awk -F "\t" '{print NF}' ${final_files_folder}/${out_ss_file}|sort -nu)
+	
+	if [ ! -z $(echo $out_ss_file_col_count|grep ' ' ) ]; 
+	then
+		echo "Error, uneven column number in ${final_files_folder}/${out_ss_file}!"
+		exit
+	fi
+
+	let index_2nd_col_no_wp=$out_ss_file_col_count-4
+	let density_2nd_col_no=$out_ss_file_col_count-3
+	let ring_no_ptob_col_no=$out_ss_file_col_count-2
+	let ring_no_btop_col_no=$out_ss_file_col_count-1
+	transition_col_no=$out_ss_file_col_count
+
+	#for tests only
+	#echo index_2nd_col_no_wp $index_2nd_col_no_wp
+	#echo density_2nd_col_no $density_2nd_col_no
+	#echo ring_no_ptob_col_no $ring_no_ptob_col_no
+	#echo ring_no_btop_col_no $ring_no_btop_col_no
+	#echo transition_col_no $transition_col_no
+
+#******************
+#exit
+
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#Uniformize the number of columns and fill empty fields with "\N"
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+  bash ${req_files_folder}/uniformize_col_no.txt ${final_files_folder}/${out_ss_file} 2 y temp_file.txt y
+  mv temp_file.txt ${final_files_folder}/${out_ss_file}
+
+#Add data_source_id
+
+perl -pe "s/\n/\t${data_source_id}\n/g" ${final_files_folder}/${out_ss_file} > temp_file.txt
+mv temp_file.txt ${final_files_folder}/${out_ss_file}
+data_source_id_col_no=$(awk -F "\t" '{print NF}' ${final_files_folder}/${out_ss_file}|sort -u)
+
+
+
+#Check if repeated index and density columns have the same
+printf "Checking for discrepancies in repeated index columns..."
+if [ $(awk -v awk_index_col_no_wp=$index_col_no_wp -v awk_index_2nd_col_no_wp=$index_2nd_col_no_wp -F "\t" '{if ($awk_index_col_no_wp!=$awk_index_2nd_col_no_wp) print}' ${final_files_folder}/${out_ss_file}|wc -l) -gt 0 ]
+then
+	printf "\n\tThere are differences in the repeated index columns (#${index_col_no_wp} and #${index_2nd_col_no_wp})\n"
+	printf "\tPlease check the file ${final_files_folder}/${out_ss_file}\n"
+	#*********************************
+	#exit 0
+else
+	printf "none found.\n"
+fi
+
+printf "Checking for discrepancies in repeated density columns..."
+if [ $(awk -v awk_density_col_no=$density_col_no -v awk_density_2nd_col_no=$density_2nd_col_no -F "\t" '{if ($awk_density_col_no!=$awk_density_2nd_col_no) print}' ${final_files_folder}/${out_ss_file}|wc -l) -gt 0 ]
+then
+	printf "\n\tThere are differences in the repeated density columns (#${density_col_no} and #${density_2nd_col_no})\n"
+	printf "\tPlease check the file ${final_files_folder}/${out_ss_file}\n"
+	#*********************************
+	#exit 0
+else
+	printf "none found.\n"
+fi
+
+
+
+
+#Place available fields in the following order
+	#1) germplasm_id
+	#2) index
+	#3) position
+	#4) density
+	#5) radial_diameter
+	#6) tangential_diameter
+	#7) coarseness
+	#8) cell_population
+	#9) ray_angle
+	#10) isopycnic_angle
+	#11) mfa
+	#12) diffraction_intensity_cv
+	#13) moe
+	#14) wall_thickness
+	#15) specific_surface
+	#16) crystallite_width
+	#17) crystallinity
+	#18) data_source_id
+	#19) ring_pith_to_bark
+	#20) ring_bark_to_pith
+	#21) transition
+
+
+
+printf "" > ${temp_f}/ordered_file.txt
+printf "" > ${temp_f}/ordered_file_headers.txt
+printf "Replacing columns in the right order:\n"
+rank=1
+for column in $(cat ${req_files_folder}/REQ_final_fields_order.txt)
+do
+	
+	current_col_name=$(echo $column|cut -f2)
+	current_col_pos=$(eval "echo $(echo $column|cut -f1)")
+	
+	if [ $current_col_pos -ne 0 ]
+	then
+		printf "\t${rank}: ${current_col_name} (previous position: ${current_col_pos})\n"
+		
+		paste ${temp_f}/ordered_file.txt <(cut -f${current_col_pos} ${final_files_folder}/${out_ss_file}) > temp.txt
+		mv temp.txt ${temp_f}/ordered_file.txt
+		
+		printf "${current_col_name}\n" >> ${temp_f}/ordered_file_headers.txt
+		let rank=$rank+1
+		
+	fi
+	
+done
+#Remove first, empty column
+#***********
+cut -f1 --complement ${temp_f}/ordered_file.txt > ${final_files_folder}/${out_ss_file} #ss_out2.txt #**************${out_ss_file}
+
+#*******************************
+#rm ${temp_f}/ordered_file.txt
+ #******************
+ #exit
+  
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#Various validation and processing before generating final files
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+
+#Now (31/5/2016) checked before everything. This section can be removed.
+	#Check if sample names are in provided sample_names_conversion_table.txt list, and if yes
+	#replace sample names with tree names
+	#sample_count=$(grep -av '^$' ${temp_f}/${out_samplenames_file}|wc -l) NOTE: 5/6/2018, remplacé par sample_number
+	#join_count=$(join <(sort -k1,1 sample_names_conversion_table.txt) <(cut -f1 ${temp_f}/${out_samplenames_file}|grep -av '^$'|sort) |wc -l)
+
+	#echo "flag 1"
+
+	#If the join results in less lines than the number of samples in the Silviscan files, assume that some names are missing in sample_names_conversion_table.txt
+	#if [ ${sample_count} -ne ${join_count} ]
+	#then
+	#  printf "Fichier d'équivalence de noms (sample_names_conversion_table.txt) incomplet, il y manque les noms d'échantillons suivants:\n"
+	#  join -t $'\t' <(sort -k1,1 sample_names_conversion_table.txt) <(cut -f1 ${temp_f}/${out_samplenames_file}|grep -av '^$'|sort) -v2 |cut -f1|sort -u|perl -pe 's/^/\t/g'
+	#  printf "\nINTERRUPTION DU PROGRAMME\n\n"
+	#  exit 0
+	#fi
+
+#echo "flag 2"
+
+#Replace FPInnovations sample names by our sample names in the main file
+join -t $'\t' <(sort -k1,1 sample_names_conversion_table.txt) <(sort -k1,1 ${final_files_folder}/${out_ss_file})|cut -f1 --complement|sort -k1,1 -k2,2n > temp_file.txt
+mv temp_file.txt ${final_files_folder}/${out_ss_file}
+#Replace sample names by tree names in incomplete rings file  
+join -t $'\t' <(sort -k1,1 sample_names_conversion_table.txt ) <(sort -k1,1 ${final_files_folder}/incomplete_rings.txt ) |cut -f1 --complement|sort -k1,1 -k2,2n > temp_file.txt    
+mv temp_file.txt ${final_files_folder}/incomplete_rings.txt
+    
+
+#echo "flag 3"
+
+
+
+#Add germplasm_id's to the all_samples_ring_info.txt file
+join -t $'\t' <(sort -k1,1 sample_names_conversion_table.txt) <(tail -n+2 ${temp_f}/all_samples_ring_info.txt|sort -k1,1 ) |sort -k1,1 -k4,4n|cat <(head -1 ${temp_f}/all_samples_ring_info.txt|perl -pe 's/^(\S+)\t/\1\tgermplasm_id\t/g') - > temp_file.txt
+#******************
+mv temp_file.txt ${temp_f}/all_samples_ring_info.txt #****************all_samples_ring_info2.txt
+
+#echo "flag 4"
+#*************************************************
+#exit
+
+#Create a sample file containing 1 tree for test insertion into the DB
+grep -a $(head -1 ${final_files_folder}/${out_ss_file}|cut -f1) ${final_files_folder}/${out_ss_file} > ${final_files_folder}/OneTree_${out_ss_file}
+
+
+#exit #<========================	  
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#Check the final data files
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+printf "Final files consistency check\n=============================\n$(date)\n\n" > ${temp_f}/check_file.txt
+printf "1. All properties: ss_out.txt vs *_properties.csv\n----------------------------------\n\nSample\tDifferent lines\n------\t---------------\n\n" > ${temp_f}/check_file1.txt
+printf "2. All properties: ss_out.txt vs *_properties.csv (method 2, March 2016)\n----------------------------------\n\nSample\tDifferent lines\n------\t---------------\n\n" > ${temp_f}/check_file2.txt
+printf "3. Ring end: all_samples_ring_info.txt vs *_ring_info.csv\n----------------------------------\n\nSample\tDifferent lines\n------\t---------------\n\n" > ${temp_f}/check_file3.txt
+printf "\nFinal files checking for inconsistencies"
+
+errors_found=0
+
+#1/6/2018: recreate the sample_names.txt file using the all_ri_samples.txt and all_wp_samples.txt files.
+join <(sort ${temp_f}/all_ri_samples.txt) <(sort ${temp_f}/all_wp_samples.txt ) > ${temp_f}/sample_names.txt
+
+
+for sample_name in $(cat ${temp_f}/sample_names.txt|grep -av '^$'|cut -f1)
+do
+	printf "."
+	germplasm_id=$(grep -aE "^${sample_name}\b" sample_names_conversion_table.txt|cut -f2)
+	
+	
+	#NOTE: these verifications are made for comma-separated files! They will not work with tab-separated files!
+	
+	#1. Verify that data are consistent between ss_out.txt and *_properties.csv
+	#------------------------------------------------------------------------------------------
+		#Extract wood properties from the final file for the current tree only 
+		grep -a "$germplasm_id" ${final_files_folder}/${out_ss_file}|cut -f$(if [ $missing_wp_index -eq 1 ];then echo $(grep -an '^index$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g'),;else echo "";fi)$(grep -an '^germplasm_id$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g'),$(grep -an '^data_source_id$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g'),$(grep -an '^ring_pith_to_bark$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g'),$(grep -an '^ring_bark_to_pith$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g'),$(grep -an '^transition$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g') --complement  > ${temp_f}/prepared_wp_file.txt
+	  
+		#Prepare infile for comparison
+		#printf "" > ${temp_f}/original_file_reordered.txt
+		if [ -e ${temp_f}/original_file_reordered.txt ];then rm ${temp_f}/original_file_reordered.txt;fi
+		
+			#Cycle through each possible field, and reconstruct a file with fields in the same order as the ss_out.txt file
+			for field_var_name in $(grep -avE '^#|^$' ${req_files_folder}/REQ_wp_all_possible_fields.txt|cut -f2)
+			do 
+				field_pos=$(eval "echo \$$field_var_name")
+				#If that column was in the original file
+				if [ $field_pos -ne 0 ]
+				then
+					#Create a new file if doesn't exit, or paste it at the end of the existing file
+					if [ ! -e ${temp_f}/original_file_reordered.txt ]
+					then
+						cut -f${field_pos} -d ',' ${folder_to_analyze}/${sample_name}*_properties.csv > ${temp_f}/original_file_reordered.txt
+					
+					else
+						paste -d ',' ${temp_f}/original_file_reordered.txt <(cut -f${field_pos} -d ',' ${folder_to_analyze}/${sample_name}*_properties.csv) > temp.txt
+						mv temp.txt ${temp_f}/original_file_reordered.txt
+					fi
+
+					#paste -d ',' ${temp_f}/original_file_reordered.txt <(cut -f${field_pos} -d ',' ${folder_to_analyze}/${sample_name}*_properties.csv) > temp.txt
+					#mv temp.txt ${temp_f}/original_file_reordered.txt
+				fi
+			done
+		
+		#cp ${temp_f}/original_file_reordered.txt S1_before_c1_removal.txt
+		
+		#Remove first, empty column created by the paste command. Note: for no apparent reason, a  on Biolinux
+		#cut -f1 --complement -d ','  ${temp_f}/original_file_reordered.txt|perl -pe 's/^\t//g' > temp.txt
+		
+		#For no apparent reason, a comma is still left at the beginning of the line. Remove it.
+		perl -pe 's/^,//g' ${temp_f}/original_file_reordered.txt|perl -pe 's/^\t//g' > temp.txt
+		
+		
+		#cp temp.txt S2_after_c1_removal.txt
+		#Replace commas with tabs, remove spaces
+		perl -pe 's/,/\t/g' temp.txt|perl -pe 's/ //g'|tail -n+2 > ${temp_f}/original_file_reordered.txt
+		
+		#cp ${temp_f}/original_file_reordered.txt S3_after_c2t_conversion.txt
+		rm temp.txt
+		
+		#Count the number of different lines between the reformatted final and original files
+		nb_different=$(diff ${temp_f}/prepared_wp_file.txt ${temp_f}/original_file_reordered.txt|wc -l)
+		if [ ${nb_different} -ne 0 ]; then errors_found=1;fi
+		printf "${sample_name}\t${nb_different}\n" >> ${temp_f}/check_file1.txt
+	
+	
+	#2. Verify that data are consistent between ss_out.txt and *_properties.csv, new method 10/3/2016, doesn't bother with columns positions, just assumes that they are the same in both files, once the extra columns are removed in the output file.
+		#If point 1 generated differences above, ignore them if no errors are found here.
+		#a. grab current sample properties file, without header, in the folder to analyze, then remove spaces, replace commas with tabs, and replace empty fields with \N
+		#b. grep the germplasm_id corresponding to the current sample in the final output file, remove added columns
+		#c. compare the two above
+		#Line before 8/1/2018: nb_different=$(sdiff -s <(tail -n+2 ${folder_to_analyze}/${sample_name}_*_properties.csv |perl -pe 's/ //g'|perl -pe 's/,/\t/g'|awk 'BEGIN { FS = OFS = "\t" } { for(i=1; i<=NF; i++) if($i ~ /^ *$/) $i = "\\N" }; 1')  <(grep ${germplasm_id} ${final_files_folder}/${out_ss_file}|cut -f3-17)|wc -l)
+		nb_different=$(sdiff -s <(tail -n+2 ${folder_to_analyze}/${sample_name}_*_properties.csv |perl -pe 's/ //g'|perl -pe 's/,/\t/g'|awk 'BEGIN { FS = OFS = "\t" } { for(i=1; i<=NF; i++) if($i ~ /^ *$/) $i = "\\N" }; 1') <(awk -F "\t" -v gi=${germplasm_id} '{if ($1 == gi) print}'  ${final_files_folder}/${out_ss_file}|cut -f2-17 -d $'\t')|wc -l)
+		
+		printf "${sample_name}\t${nb_different}\n" >>  ${temp_f}/check_file2.txt
+		if [ ${nb_different} -ne 0 ]; then errors_found=1;fi
+		
+	#3. Verify consistency of ring end between all_samples_ring_info.txt et *_ring_info.csv
+		nb_different=$(perl -pe 's/,/\t/g' ${folder_to_analyze}/${sample_name}*_ring_info.csv |grep -av "${ri_header_identifier}"|cut -f${dataidx_col_no}|diff - <(grep -aE "^${sample_name}\b" ${temp_f}/all_samples_ring_info.txt |cut -f7)|wc -l)
+		printf "${sample_name}\t${nb_different}\n" >> ${temp_f}/check_file3.txt
+
+		if [ ${nb_different} -ne 0 ]
+		then
+			errors_found=1
+			perl -pe 's/,/\t/g' ${folder_to_analyze}/${sample_name}*_ring_info.csv |grep -av "${ri_header_identifier}"|cut -f${dataidx_col_no}|paste - <(grep -aE "^${sample_name}\b" ${temp_f}/all_samples_ring_info.txt |cut -f7)|cat <(printf "\n*_ring_info.csv\tall_samples_ring_info.txt\n-----------\t-----------------\n") -|perl -pe 's/^/\t\t/g'  >> ${temp_f}/check_file3.txt
+		fi
+
+	#4. Same verification as #1, but by a JOIN instead
+	#[20180105]: to be completed, if needed.
+	#join -t $'\t' <(sort -k1,1 ${temp_f}/prepared_wp_file.txt) <(sort -k1,1 ${temp_f}/original_file_reordered.txt) > ${temp_f}/prep_wp_joind_to_original.txt
+	
+	
+	
+
+
+
+
+done
+
+cat ${temp_f}/check_file.txt ${temp_f}/check_file1.txt <(printf "\n\n") ${temp_f}/check_file2.txt <(printf "\n\n") ${temp_f}/check_file3.txt > ${temp_f}/tmp_check_file.txt
+mv ${temp_f}/tmp_check_file.txt ${temp_f}/check_file.txt
+
+if [ ${errors_found} -eq 1 ]; then echo "WARNING: some inconsistencies found between the original data files and the final files generated!"; echo "Please read \"check_file.txt\"";else echo "All OK!";fi
+
+#Generating a file to validate the transitions in ss_out.txt
+  printf "\nGenerating validation files for checking transitions..."
+  
+  grep -av 'germplasm_id' ${temp_f}/all_samples_ring_info.txt |sort -R |head -30|sort -k2,2 -k4,4n|cat <(head -1 ${temp_f}/all_samples_ring_info.txt ) - > ${final_files_folder}/transitions_to_validate.txt
+  #Line before 2/6/2016: sort -R ${temp_f}/all_samples_ring_info.txt |head -30|grep -av 'Arbre'|sort -k2,2 -k4,4n|cat <(head -1 ${temp_f}/all_samples_ring_info.txt ) - > ${final_files_folder}/transitions_to_validate.txt
+  cut -f2 ${final_files_folder}/transitions_to_validate.txt |sort -u|join -t $'\t' - <(cut -f$(grep -an '^germplasm_id$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g'),$(grep -an '^index$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g'),$(grep -an '^position$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g'),$(grep -an '^density$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g'),$(grep -an '^ring_pith_to_bark$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g'),$(grep -an '^transition$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g') ${final_files_folder}/${out_ss_file})> ${final_files_folder}/ss_out_to_validate_for_transition.txt
+  printf "done.\n Please, print the file: \"${final_files_folder}/transitions_to_validate.txt\" and verify the file \"${final_files_folder}/ss_out_to_validate_for_transition.txt\" with it.\n"
+  #read -p "---press return to proceed with the final report---"
+
+
+#Prepare the psql commands
+echo "psql -U cleseb -h "132.156.208.45" -d phenotree_development -c \"\copy silviscan_measurements ($(perl -pe 's/\n/,/g' ${temp_f}/ordered_file_headers.txt|perl -pe 's/,$/\n/g')) FROM '${out_ss_file}'\"" > ${final_files_folder}/psql_commands.txt
+echo "psql -U cleseb -h "132.156.208.45" -d phenotree_development -c \"\copy incomplete_rings (germplasm_id,ring_pith_to_bark,data_source_id,comments,employee_id) FROM 'incomplete_rings.txt'\"" >> ${final_files_folder}/psql_commands.txt
+perl -pe 's/phenotree_development/phenotree_production/g' ${final_files_folder}/psql_commands.txt |cat ${final_files_folder}/psql_commands.txt - > temp.txt
+mv temp.txt ${final_files_folder}/psql_commands.txt
+
+
+#Copy warning/error codes descriptions to sample_errors.txt and rings_errors.txt (1/6/2018)
+join -t $'\t' <(awk -F "\t" '{print $2"\t"$0}' ${temp_f}/${err_warn_f}/${samples_err_j}|sort -k1,1) <(grep -v -e "#" -e "^$" ${req_files_folder}/Warning_and_error_codes.txt|cut -f1,3|sort -k1,1)|cut -f1 --complement|sort -k1,1 -k2,2|cat <(head -1 ${temp_f}/${err_warn_f}/${samples_err_j}) - > temp.txt
+mv temp.txt ${temp_f}/${err_warn_f}/${samples_err_j}
+
+join -t $'\t' <(awk -F "\t" '{print $3"\t"$0}' ${temp_f}/${err_warn_f}/${rings_err_j}|sort -k1,1) <(grep -v -e "#" -e "^$" ${req_files_folder}/Warning_and_error_codes.txt|cut -f1,3|sort -k1,1)|cut -f1 --complement|sort -k1,1 -k2,2n -k3,3|cat <(head -1 ${temp_f}/${err_warn_f}/${rings_err_j}) - > temp.txt
+mv temp.txt ${temp_f}/${err_warn_f}/${rings_err_j}
+
+
+
+
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#Display stats
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+printf "Fichiers d'entrée:\n" > ${temp_f}/${summary_journal_filename}
+printf "=-----------------\n" >> ${temp_f}/${summary_journal_filename}
+printf "\tNombre d'échantillons: ${sample_number}\n" >> ${temp_f}/${summary_journal_filename}
+#List of samples (takes whe samples in common in all_ri_samples.txt and all_wp_samples.txt):
+	#cat ${temp_f}/${out_samplenames_file}|perl -pe 's/^/\t\t/g' >> ${temp_f}/${summary_journal_filename} #Line before 29/5/2018
+	join <(sort ${temp_f}/all_ri_samples.txt) <(sort ${temp_f}/all_wp_samples.txt)|perl -pe 's/^/\t\t/g' >> ${temp_f}/${summary_journal_filename} #New 29/5/2018
+
+printf "\n\tNombre de colonnes: $(cat ${temp_f}/header_wp.txt|wc -l)\n" >> ${temp_f}/${summary_journal_filename}
+cat ${temp_f}/header_wp.txt|perl -pe 's/^/\t\t/g' >> ${temp_f}/${summary_journal_filename}
+
+printf "Fichier final:\n" >> ${temp_f}/${summary_journal_filename}
+printf "=-----------\n" >> ${temp_f}/${summary_journal_filename}
+printf "\n${final_files_folder}/${out_ss_file}: fichier pour import dans la table silviscan_measurements\n\n" >> ${temp_f}/${summary_journal_filename}
+printf "\tNombre de colonnes: $(awk -F '\t' '{print NF}' ${final_files_folder}/${out_ss_file}|sort -u)\n" >> ${temp_f}/${summary_journal_filename}
+cat ${temp_f}/ordered_file_headers.txt|perl -pe 's/^/\t\t/g' >> ${temp_f}/${summary_journal_filename}
+printf "\tNombre de lignes avec au moins un champ NULL (\\N): $(grep '\N' ${final_files_folder}/${out_ss_file}|wc -l) \n" >> ${temp_f}/${summary_journal_filename}
+printf "\tNombre de lignes totales: $(cat ${final_files_folder}/${out_ss_file}|wc -l)\n" >> ${temp_f}/${summary_journal_filename}
+
+
+echo
+
+printf "\nVoir le fichier \"all_samples_ring_info.txt\" pour les statistiques sur les cernes.\n" >> ${temp_f}/${summary_journal_filename}
+
+printf "\n\nVoir le fichier \"${final_files_folder}/psql_commands.txt\" pour l'insertion dans la BD.\n" >> ${temp_f}/${summary_journal_filename}
+
+printf "\n\nSCRIPT TERMINÉ.\n" >> ${temp_f}/${summary_journal_filename}
+
+cat ${temp_f}/${summary_journal_filename}
+
+
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#Gather warning/error messages (5/6/2018)
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+
+#Aggregate and count ring error/warning codes
+	#21/6/2018: corrected the initial underscore used for linking error codes and sample names. This caused bugs when sample names contained underscores themselves.
+	awk -F "\t" '{if($1 !~ /Sample/) print $3"_LINK_"$1"\t"$2}' ${temp_f}/${err_warn_f}/${rings_err_j}|sort -k1,1 -k2,2n|awk -F '\t' '$1==x{printf ",%s", $2; next}; {x=$1;printf "\n%s\t%s", $1, $2};END {printf "\n"}'|awk -F "\t" '{print $1"("$2")"}'|perl -pe 's/_LINK_/\t/g'|sort -k1,1|awk -F '\t' '$1==x{printf ", %s", $2; next}; {x=$1;printf "\n%s\t%s", $1, $2};END {printf "\n"}' > ${temp_f}/${err_warn_f}/agg_ring_errs.txt
+	#()
+	#W27     30273(1), 41955(2,6,13), 52083(2,3,7)
+	#W31     41955(1)
+	#W32     41955(14), 52083(17)
+
+
+	awk -F "\t" '{if ($1 !~ /Sample/) print $3"\t"$2}' ${temp_f}/${err_warn_f}/${rings_err_j}|cut -f1|sort|uniq -c|perl -pe 's/^ +(\d+) (\S+)/\2\t\1/g' > ${temp_f}/${err_warn_f}/agg_ring_errs_ring_counts.txt
+	#W27     7
+	#W31     1
+	#W32     2
+
+	awk -F "\t" '{if ($1 !~ /Sample/) print $3"\t"$1}' ${temp_f}/${err_warn_f}/${rings_err_j}|sort -u|cut -f1|sort|uniq -c|perl -pe 's/^ +(\d+) (\S+)/\2\t\1/g' > ${temp_f}/${err_warn_f}/agg_ring_errs_sample_counts.txt
+	#W27     3
+	#W31     1
+	#W32     2
+
+	join -t $'\t' <(sort -k1,1 ${temp_f}/${err_warn_f}/agg_ring_errs_ring_counts.txt) <(sort -k1,1 ${temp_f}/${err_warn_f}/agg_ring_errs_sample_counts.txt)|join -t $'\t' - <(sort -k1,1 ${temp_f}/${err_warn_f}/agg_ring_errs.txt) > ${temp_f}/${err_warn_f}/agg_ring_errs_combined.txt
+	#W27     7       3       30273(1), 41955(2,6,13), 52083(2,3,7)
+	#W31     1       1       41955(1)
+	#W32     2       2       41955(14), 52083(17)
+
+#Aggregate and count sample error/warning codes
+	awk -F "\t" '{if ($1 !~ /Sample/) print $2"\t"$1}' ${temp_f}/${err_warn_f}/${samples_err_j}|sort -k1,1 -k2,2 > ${temp_f}/${err_warn_f}/sorted_sample_errs.txt
+	#W30     30273
+	#W30     41955
+	#W30     52083
+
+	awk -F '\t' '$1==x{printf ", %s", $2; next}; {x=$1;printf "\n%s\t%s", $1, $2};END {printf "\n"}' ${temp_f}/${err_warn_f}/sorted_sample_errs.txt > ${temp_f}/${err_warn_f}/agg_sample_errs.txt
+	#W30     30273, 41955, 52083
+
+	cut -f1 ${temp_f}/${err_warn_f}/sorted_sample_errs.txt|sort|uniq -c|perl -pe 's/^ +(\d+) (\S+)/\2\t\1/g' > ${temp_f}/${err_warn_f}/agg_sample_errs_sample_counts.txt
+	#W30     3
+
+	join -t $'\t' <(sort -k1,1 ${temp_f}/${err_warn_f}/agg_sample_errs_sample_counts.txt) <(sort -k1,1 ${temp_f}/${err_warn_f}/agg_sample_errs.txt)|awk -F "\t" '{print $1"\t-\t"$2"\t"$3}' > ${temp_f}/${err_warn_f}/agg_samples_errs_combined.txt
+	#W30     -       3       30273, 41955, 52083
+
+#Regroup rings and samples
+	cat ${temp_f}/${err_warn_f}/agg_ring_errs_combined.txt ${temp_f}/${err_warn_f}/agg_samples_errs_combined.txt|sort -k1,1|cat <(printf "code\trings\tsmpls\tlist\n") - <(printf "\n\n---------------------------------------\nList of error/warning codes\n---------------------------------------\n") <(grep -v -e "#" -e "^$" ${req_files_folder}/Warning_and_error_codes.txt|cut -f1,3|sort -k1,1) > ${final_files_folder}/errors_and_warnings_summary.txt
+	#code    rings   smpls   list
+	#W27     7       3       30273(1), 41955(2,6,13), 52083(2,3,7)
+	#W30     -       3       30273, 41955, 52083
+	#W31     1       1       41955(1)
+	#W32     2       2       41955(14), 52083(17)
+
+#exit 0
+
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+#Move files to final folder
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+
+cp $0 ${final_files_folder}/
+cp sample_names_conversion_table.txt ${final_files_folder}/
+cp -r ${req_files_folder} ${final_files_folder}/
+
+mv ${temp_f}/${err_warn_f} ${final_files_folder}/${err_warn_f}
+mv ${temp_f} ${final_files_folder}/
+
+
+
+
+
+#End of logging
+} 2>&1|tee ${final_files_folder}/${execution_journal_filename}
+
+
+exit 0
