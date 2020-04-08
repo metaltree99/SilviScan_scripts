@@ -1,7 +1,7 @@
 #!bin/bash
 #---------------------------------------------------------------------------------------------------------------------------------------------------
 #Script to regroup data from raw Silviscan files into files for import in TreeSource
-#Sébastien Clément, 6/05/2010
+#SÃ©bastien ClÃ©ment, 6/05/2010
 script_version="2018-09-13"
 test=0
 
@@ -317,7 +317,7 @@ test=0
   #NOTE: these files must be COMMA-SEPARATED VALUES FILES. ANY SPACE THEY MAY CONTAIN WILL BE REMOVED.
   # THUS, BE SURE THAT NO SAMPLE NAMES CONTAIN SPACES.
     #A. Wood properties file, eg.: sample1_wood_010101_properties.csv
-        #Index   Position (mm)   Density (kg/m^3)        Radial diameter (¦m)    Tangential diameter (¦m)        Coarseness (¦g/m) Cell population (/mm^2) Ray angle (Deg) Isopycnic angle (Deg)   MFA (Deg)       DiffIntens CV   MOE (Gpa)Wall thickness (¦m)      Specific surface (m^2/kg)       Crystallite Width (nm)  Crystallinity
+        #Index   Position (mm)   Density (kg/m^3)        Radial diameter (Â¦m)    Tangential diameter (Â¦m)        Coarseness (Â¦g/m) Cell population (/mm^2) Ray angle (Deg) Isopycnic angle (Deg)   MFA (Deg)       DiffIntens CV   MOE (Gpa)Wall thickness (Â¦m)      Specific surface (m^2/kg)       Crystallite Width (nm)  Crystallinity
         #0       0.000   570.    20.5    29.5    344.    1655.   16.1    28.6    30.3    0.185   7.2     2.56    290.    1.98      0.066
         #1       0.025   567.    20.6    28.4    332.    1709.   16.0    28.6    30.3    0.185   7.2     2.52    295.    1.98      0.066
         #2       0.050   577.    21.1    30.1    367.    1572.   16.0    28.6    30.3    0.185   7.2     2.66    279.    1.98      0.066
@@ -492,7 +492,7 @@ IFS='
 	declare -i ring_last_index                        #Ending index no for current index
 	declare -i lines_where_density_differs    #Number of lines where sample name from column 1 != sample name from column 19
 	declare -i lines_where_index_no_differs     #Number of lines where index from column 2 != index from column 20
-	#declare -i sample_count                         #Total number of samples. NOTE: 5/6/2018, remplacé par sample_number
+	#declare -i sample_count                         #Total number of samples. NOTE: 5/6/2018, remplacÃ© par sample_number
 	declare -i sample_number                        #Incremented # each time process a new sample
 	declare -i test_run_turns                        #Number of samples for the test-run
 	declare -i ring_counter				#The line number in the ring info file, corresponding to the current ring being analyzed.
@@ -634,7 +634,7 @@ printf "ok\n\n"
 #---------------------------------------------------------------------------------------------------------------------------------------------------
 echo "========================================="
 echo "Silviscan data preparation for import into TreeSource."
-echo "By Sébastien Clément, May 5th 2010"
+echo "By SÃ©bastien ClÃ©ment, May 5th 2010"
 echo "Script $0"
 echo "Script name: $0, version: ${script_version}"
 printf "Run date: $(date)\n"
@@ -991,7 +991,7 @@ fi
 printf "" > ${final_files_folder}/${out_ss_file}
 #printf "" > ${temp_f}/${out_samplenames_file} #Removed 29/5/2018
 printf "" > ${final_files_folder}/incomplete_rings.txt
-printf "Échantillon\tNombre de cernes\t# cerne\t# cerne (écorce-moëlle)\tIndex début\tIndex fin\tDensité min.\tDensité max.\tDensité de transition\tIndex début bois final\n" > ${temp_f}/all_samples_ring_info.txt
+printf "Ã‰chantillon\tNombre de cernes\t# cerne\t# cerne (Ã©corce-moÃ«lle)\tIndex dÃ©but\tIndex fin\tDensitÃ© min.\tDensitÃ© max.\tDensitÃ© de transition\tIndex dÃ©but bois final\n" > ${temp_f}/all_samples_ring_info.txt
 printf "Sample_name\terror_code\tdescription\n" > ${temp_f}/${err_warn_f}/${samples_err_j}
 printf "Sample_name\tring_no_p2b\terror_code\tdescription\n" > ${temp_f}/${err_warn_f}/${rings_err_j}
 
@@ -2212,7 +2212,7 @@ cut -f1 --complement ${temp_f}/ordered_file.txt > ${final_files_folder}/${out_ss
 #Now (31/5/2016) checked before everything. This section can be removed.
 	#Check if sample names are in provided sample_names_conversion_table.txt list, and if yes
 	#replace sample names with tree names
-	#sample_count=$(grep -av '^$' ${temp_f}/${out_samplenames_file}|wc -l) NOTE: 5/6/2018, remplacé par sample_number
+	#sample_count=$(grep -av '^$' ${temp_f}/${out_samplenames_file}|wc -l) NOTE: 5/6/2018, remplacÃ© par sample_number
 	#join_count=$(join <(sort -k1,1 sample_names_conversion_table.txt) <(cut -f1 ${temp_f}/${out_samplenames_file}|grep -av '^$'|sort) |wc -l)
 
 	#echo "flag 1"
@@ -2220,7 +2220,7 @@ cut -f1 --complement ${temp_f}/ordered_file.txt > ${final_files_folder}/${out_ss
 	#If the join results in less lines than the number of samples in the Silviscan files, assume that some names are missing in sample_names_conversion_table.txt
 	#if [ ${sample_count} -ne ${join_count} ]
 	#then
-	#  printf "Fichier d'équivalence de noms (sample_names_conversion_table.txt) incomplet, il y manque les noms d'échantillons suivants:\n"
+	#  printf "Fichier d'Ã©quivalence de noms (sample_names_conversion_table.txt) incomplet, il y manque les noms d'Ã©chantillons suivants:\n"
 	#  join -t $'\t' <(sort -k1,1 sample_names_conversion_table.txt) <(cut -f1 ${temp_f}/${out_samplenames_file}|grep -av '^$'|sort) -v2 |cut -f1|sort -u|perl -pe 's/^/\t/g'
 	#  printf "\nINTERRUPTION DU PROGRAMME\n\n"
 	#  exit 0
@@ -2399,9 +2399,9 @@ mv temp.txt ${temp_f}/${err_warn_f}/${rings_err_j}
 #---------------------------------------------------------------------------------------------------------------------------------------------------
 #Display stats
 #---------------------------------------------------------------------------------------------------------------------------------------------------
-printf "Fichiers d'entrée:\n" > ${temp_f}/${summary_journal_filename}
+printf "Fichiers d'entrÃ©e:\n" > ${temp_f}/${summary_journal_filename}
 printf "=-----------------\n" >> ${temp_f}/${summary_journal_filename}
-printf "\tNombre d'échantillons: ${sample_number}\n" >> ${temp_f}/${summary_journal_filename}
+printf "\tNombre d'Ã©chantillons: ${sample_number}\n" >> ${temp_f}/${summary_journal_filename}
 #List of samples (takes whe samples in common in all_ri_samples.txt and all_wp_samples.txt):
 	#cat ${temp_f}/${out_samplenames_file}|perl -pe 's/^/\t\t/g' >> ${temp_f}/${summary_journal_filename} #Line before 29/5/2018
 	join <(sort ${temp_f}/all_ri_samples.txt) <(sort ${temp_f}/all_wp_samples.txt)|perl -pe 's/^/\t\t/g' >> ${temp_f}/${summary_journal_filename} #New 29/5/2018
@@ -2424,7 +2424,7 @@ printf "\nVoir le fichier \"all_samples_ring_info.txt\" pour les statistiques su
 
 printf "\n\nVoir le fichier \"${final_files_folder}/psql_commands.txt\" pour l'insertion dans la BD.\n" >> ${temp_f}/${summary_journal_filename}
 
-printf "\n\nSCRIPT TERMINÉ.\n" >> ${temp_f}/${summary_journal_filename}
+printf "\n\nSCRIPT TERMINÃ‰.\n" >> ${temp_f}/${summary_journal_filename}
 
 cat ${temp_f}/${summary_journal_filename}
 
