@@ -2,7 +2,7 @@
 #---------------------------------------------------------------------------------------------------------------------------------------------------
 #Script to regroup data from raw Silviscan files into files for import in TreeSource
 #Sébastien Clément, 6/05/2010
-script_version="2018-09-13"
+script_version="2021-07-20"
 test=0
 
 #------------------------
@@ -64,28 +64,28 @@ test=0
 	#	2. Some of the last reads may have been removed post-SilviScan to reduce background noise.
 	#
 	#The script detects the last ring as follows:
-	#	1. Extra reads at the end of *_wood_properties.csv file that are not part of the last ring in *_ring_info.csv.
+	#	1. Extra reads at the end of *_wood_properties.csv file that are not part of the last ring in _*_ring_info.csv.
 	#		---> these extra reads are ALWAYS considered as an INCOMPLETE ring	
 	#		Notes: 
 	#		- These cases are seen only in datasets obtained prior to 2008.
 	#		- These extra reads are always kept in TreeSource.
-	#	2. Last ring in *_ring_info.csv file when no extra reads occur
+	#	2. Last ring in _*_ring_info.csv file when no extra reads occur
 	#		---> this last ring will be considered INCOMPLETE ONLY if last_ring_is_incomplete=1.
 	#	Note: RingShell=0 is no longer used to detect the completeness of the ring, because it is not always there.
 	last_ring_is_incomplete=1	#1. incomplete (DEFAULT) 	2. complete
 	#
 	#Consequences of an incomplete last ring:
 	#	1.That ring will receive the following number (WHEN AUTOMATED):
-	#		pith_to_bark (RingAge): *_ring_info.csv's last ring number + 1
+	#		pith_to_bark (RingAge): _*_ring_info.csv's last ring number + 1
 	#		bark to pith (RingShell): 0
 	#	2. Transition will be set to \N for that ring.
 	#	3. The ring will be added to the incomplete_rings table.
 	#
 
 	#New: 13/9/2018
-	#When the last ring in *_ring_info.csv files is a "false ring" of 0 width, only there to mark the boundary of the real last ring (previous one)...
+	#When the last ring in _*_ring_info.csv files is a "false ring" of 0 width, only there to mark the boundary of the real last ring (previous one)...
 	#...to allow the latter to be included into the *_properties_ring_stats.csv calculations, which usually exclude the last ring.
-	#The *_properties.csv files doesn't have any modifications in these cases.
+	#The _*_properties.csv files doesn't have any modifications in these cases.
 	#This is a SPECIAL PROTOCOL, used occasionally for some specific datasets. It is not sample-specific, and applies to the whole dataset. Example: FPI05 from Tessie Tong.
 	#Setting last_ring_is_false_ring to 2 will remove the false ring from the ring info file, hence it will not be analyzed or incorporated in the final data...
 	#...and the real last, incomplete ring will have the ring number bark to pith = 0
@@ -116,7 +116,7 @@ test=0
 	#16/7/2010: Corrected improper removal of decimal point and trailing 0's in densities, causing erraneous calculations of min/max (lines #244, 247,248), and comparisons of densities (lines #360 & 368)
 	#19/7/2010: Added line numbers into temporary files used for the determination of transition between early and latewood (line #258). Theses line #'s are not used in the calculation for now.
 	#19/7/2010: Added a variable to count the total number of rings (nb_of_rings)
-	#19/7/2010: Ring number (ring_no_ptb, ring_no_ptb) is no longer read into the *_ring_info.csv file, but rather incremented/decremented from the number of lines of that file. See Maurice Defo explaination on this (MauriceDefo20100116.msg). This behaviour can be changed (see lines #226-235).
+	#19/7/2010: Ring number (ring_no_ptb, ring_no_ptb) is no longer read into the _*_ring_info.csv file, but rather incremented/decremented from the number of lines of that file. See Maurice Defo explaination on this (MauriceDefo20100116.msg). This behaviour can be changed (see lines #226-235).
 	#19/7/2010: Took into account the possibility that no transition between and early wood would be found. In that case, a "\N" value is put in that field.
 	#20/7/2010: Added final files consistency check
 	#25/11/2010: Correction to have a single output file at the end
@@ -236,7 +236,7 @@ test=0
 	#	Now the last ring is considered incomplete when:
 	#	#1. There are extra reads in wp file compared to ri file. Those extra reads make the last, incomplete ring
 		#2. When ring is the last in ring info file and no extra reads are found in wp vs ri, and when:
-		#	2a. RingShell=0 in *_ring_info.csv file 									
+		#	2a. RingShell=0 in _*_ring_info.csv file 									
 		#		OR
 		#	2b. last ring is considered incomplete by default (last_ring_is_incomplete=1)			
 	
@@ -277,15 +277,16 @@ test=0
 
 	#13/9/2018
 	#Added 2 new variables for special datasets:
-	#	- last_ring_is_false_ring: when set to 2, indicates that there is a false ring with a width of 0 in the *_ring_info.csv file.
+	#	- last_ring_is_false_ring: when set to 2, indicates that there is a false ring with a width of 0 in the _*_ring_info.csv file.
 	#		This false ring was added by FPInnovations to force the SS3 software to make average calculations on the last, incomplete ring, which was otherwise excluded from the calculations.
 	#	- first_ring_is_the_pith: when set to 2, indicates that first ring encountered is actually the pith. These rings will stay in the results but have a ring_no_pith_to_bark  number = 0
 	#		- When this variable is set to 2, it automatically sets the ring numbering method (pith 2 bark) to automatic (ring_numbering_method_p2b=2)
 	#		- Also, these rings should be MANUALLY ADDED to invalid_rings.
 	#	These 2 variables are rarely being set to 2.
 	#	For now, only the dataset of project FPI05 uses them.
-
 	
+	#20210720
+	#	Fixed all occurrences of "*_properties.csv" and "*_ring_info.csv" with "_*_properties.csv" and "_*_ring_info.csv" to avoid getting similarly-named samples (e.g. C-293-D_wood_010101_ring_info.csv and C-293-DBH_wood_010101_ring_info.csv) and cause an error.
 	
 #--------------------------------------------------------------------------------------------------------------------------------------------------
 #TODO:
@@ -1028,7 +1029,8 @@ do
   
 	
 	#Uniformize column number
-	bash ${req_files_folder}/uniformize_col_no.txt ${temp_f}/current_sample_temp_file_A.txt 1 y temp_file.txt y
+	#[NEw 20210720]: the timestamp ${ts} is passed to uniformize_col_no.txt to be used as a suffix
+	bash ${req_files_folder}/uniformize_col_no.txt ${temp_f}/current_sample_temp_file_A.txt 1 y temp_file.txt y ${ts}
 	mv temp_file.txt ${temp_f}/current_sample_temp_file_A.txt
 
   
@@ -1255,7 +1257,8 @@ do
 	
 
 	#Uniformize column number
-	bash ${req_files_folder}/uniformize_col_no.txt ${temp_f}/rinfo_formatted.txt 1 y temp_file.txt y
+	#[NEw 20210720]: the timestamp ${ts} is passed to uniformize_col_no.txt to be used as a suffix
+	bash ${req_files_folder}/uniformize_col_no.txt ${temp_f}/rinfo_formatted.txt 1 y temp_file.txt y ${ts}
 	mv temp_file.txt ${temp_f}/rinfo_formatted.txt
 
 	#rinfo_formatted.txt
@@ -1299,9 +1302,9 @@ do
 	#				In special cases where the first ring is the PITH, will start with 0 as the first ring number.
 	#ring_no_btp_auto:	the automated ring numbering from BARK to pith
 	#				When the last ring is considered incomplete (default), will start as nb_of_rings - 1 and decrease
-	#				When last ring is complete, or there are extra reads in *_properties.csv file compared to the *_ring_info.csv file, will start as nb_of_rings and decrease
-	#ring_no_ptb_rifile:	The PITH to bark numbering as read from the *_ring_info.csv file. Usually starts at 1 and increases. Occasionally starts at 2 or 3 (see FPI01 project on 331 conifers).
-	#ring_no_btp_rifile:	The BARK to pith numbering as read from the *_ring_info.csv file. Usually ends at 0, indicating an incomplete last ring.
+	#				When last ring is complete, or there are extra reads in _*_properties.csv file compared to the _*_ring_info.csv file, will start as nb_of_rings and decrease
+	#ring_no_ptb_rifile:	The PITH to bark numbering as read from the _*_ring_info.csv file. Usually starts at 1 and increases. Occasionally starts at 2 or 3 (see FPI01 project on 331 conifers).
+	#ring_no_btp_rifile:	The BARK to pith numbering as read from the _*_ring_info.csv file. Usually ends at 0, indicating an incomplete last ring.
 	#ring_no_ptb:		The PITH to bark ring numbering in use, selected either from ring_no_ptb_rifile or ring_no_ptb_auto, according to ring_numbering_method_p2b (1=rifile = preferred, 2=auto)
 	#ring_no_btp:		The BARK to pith ring numbering in use, selected either from ring_no_btp_rifile or ring_no_btp_auto, according to ring_numbering_method_b2p (1=rifile, 2=auto = preferred)
 	
@@ -1357,7 +1360,7 @@ do
 	mv ${temp_f}/temp_file.txt ${temp_f}/rinfo_formatted.txt
 	#2. Shift each ring's last position to the row below (next ring) and add 0.025 (step). This will represent first position in that next ring.
 	#3. Then substract first position from last position, which will give width.
-	bash ${req_files_folder}/copy_shifted_columns.txt ${temp_f}/rinfo_formatted.txt -0.025 4 1|awk -F "\t" -v astep=${step} '{print $1"\t"$2"\t"$3"\t"$5+astep"\t"$4}'|awk -F "\t" '{print $0"\t"$5-$4}' > ${temp_f}/temp_file.txt
+	bash ${req_files_folder}/copy_shifted_columns.txt ${temp_f}/rinfo_formatted.txt ${ts} -0.025 4 1|awk -F "\t" -v astep=${step} '{print $1"\t"$2"\t"$3"\t"$5+astep"\t"$4}'|awk -F "\t" '{print $0"\t"$5-$4}' > ${temp_f}/temp_file.txt
 	mv ${temp_f}/temp_file.txt ${temp_f}/rinfo_formatted.txt
 	#
 	#144		16	1	0		3.6		3.6
@@ -1737,7 +1740,7 @@ do
 
 			
 			#Copy twice the 'density' column, one shifted up by 1 pos, the other shifted up by 2, to compare actual density with next and second next line densities
-				bash ${req_files_folder}/copy_shifted_columns.txt ${temp_f}/current_ring_indexes_density.txt "0" 2 -1 2 -2 > ${temp_f}/temp_transition_calc_A.txt
+				bash ${req_files_folder}/copy_shifted_columns.txt ${temp_f}/current_ring_indexes_density.txt ${ts} "0" 2 -1 2 -2 > ${temp_f}/temp_transition_calc_A.txt
 				#temp_transition_calc_A.txt
 				#(index)	(density)	(density next)		(density 2nd next)	
 				#\/		\/		\/			\/
@@ -2110,7 +2113,8 @@ echo
 #---------------------------------------------------------------------------------------------------------------------------------------------------
 #Uniformize the number of columns and fill empty fields with "\N"
 #---------------------------------------------------------------------------------------------------------------------------------------------------
-  bash ${req_files_folder}/uniformize_col_no.txt ${final_files_folder}/${out_ss_file} 2 y temp_file.txt y
+  #[NEw 20210720]: the timestamp ${ts} is passed to uniformize_col_no.txt to be used as a suffix
+  bash ${req_files_folder}/uniformize_col_no.txt ${final_files_folder}/${out_ss_file} 2 y temp_file.txt y ${ts}
   mv temp_file.txt ${final_files_folder}/${out_ss_file}
 
 #Add data_source_id
@@ -2258,9 +2262,9 @@ grep -a $(head -1 ${final_files_folder}/${out_ss_file}|cut -f1) ${final_files_fo
 #Check the final data files
 #---------------------------------------------------------------------------------------------------------------------------------------------------
 printf "Final files consistency check\n=============================\n$(date)\n\n" > ${temp_f}/check_file.txt
-printf "1. All properties: ss_out.txt vs *_properties.csv\n----------------------------------\n\nSample\tDifferent lines\n------\t---------------\n\n" > ${temp_f}/check_file1.txt
-printf "2. All properties: ss_out.txt vs *_properties.csv (method 2, March 2016)\n----------------------------------\n\nSample\tDifferent lines\n------\t---------------\n\n" > ${temp_f}/check_file2.txt
-printf "3. Ring end: all_samples_ring_info.txt vs *_ring_info.csv\n----------------------------------\n\nSample\tDifferent lines\n------\t---------------\n\n" > ${temp_f}/check_file3.txt
+printf "1. All properties: ss_out.txt vs _*_properties.csv\n----------------------------------\n\nSample\tDifferent lines\n------\t---------------\n\n" > ${temp_f}/check_file1.txt
+printf "2. All properties: ss_out.txt vs _*_properties.csv (method 2, March 2016)\n----------------------------------\n\nSample\tDifferent lines\n------\t---------------\n\n" > ${temp_f}/check_file2.txt
+printf "3. Ring end: all_samples_ring_info.txt vs _*_ring_info.csv\n----------------------------------\n\nSample\tDifferent lines\n------\t---------------\n\n" > ${temp_f}/check_file3.txt
 printf "\nFinal files checking for inconsistencies"
 
 errors_found=0
@@ -2277,9 +2281,20 @@ do
 	
 	#NOTE: these verifications are made for comma-separated files! They will not work with tab-separated files!
 	
-	#1. Verify that data are consistent between ss_out.txt and *_properties.csv
+	#1. Verify that data are consistent between ss_out.txt and _*_properties.csv
 	#------------------------------------------------------------------------------------------
 		#Extract wood properties from the final file for the current tree only 
+		#1. grep -a "$germplasm_id" ${final_files_folder}/${out_ss_file}															Keeps only the germplasm_id of current tree
+		#2. removes columns:
+		#	$(if [ $missing_wp_index -eq 1 ];then echo $(grep -an '^index$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g'),;else echo "";fi)	Column # for index
+		#	$(grep -an '^data_source_id$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g')									Column # for data_source_id
+		#	$(grep -an '^ring_pith_to_bark$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g'),									Column # for ring number pith to bark
+		#	$(grep -an '^ring_bark_to_pith$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g'),									Column # for ring number bark to pith 
+		#	$(grep -an '^transition$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g')										Column # for transition
+		#
+		
+		
+		
 		grep -a "$germplasm_id" ${final_files_folder}/${out_ss_file}|cut -f$(if [ $missing_wp_index -eq 1 ];then echo $(grep -an '^index$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g'),;else echo "";fi)$(grep -an '^germplasm_id$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g'),$(grep -an '^data_source_id$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g'),$(grep -an '^ring_pith_to_bark$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g'),$(grep -an '^ring_bark_to_pith$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g'),$(grep -an '^transition$' ${temp_f}/ordered_file_headers.txt |perl -pe 's/^(\d+):.+/\1/g') --complement  > ${temp_f}/prepared_wp_file.txt
 	  
 		#Prepare infile for comparison
@@ -2296,10 +2311,10 @@ do
 					#Create a new file if doesn't exit, or paste it at the end of the existing file
 					if [ ! -e ${temp_f}/original_file_reordered.txt ]
 					then
-						cut -f${field_pos} -d ',' ${folder_to_analyze}/${sample_name}*_properties.csv > ${temp_f}/original_file_reordered.txt
+						cut -f${field_pos} -d ',' ${folder_to_analyze}/${sample_name}_*_properties.csv > ${temp_f}/original_file_reordered.txt
 					
 					else
-						paste -d ',' ${temp_f}/original_file_reordered.txt <(cut -f${field_pos} -d ',' ${folder_to_analyze}/${sample_name}*_properties.csv) > temp.txt
+						paste -d ',' ${temp_f}/original_file_reordered.txt <(cut -f${field_pos} -d ',' ${folder_to_analyze}/${sample_name}_*_properties.csv) > temp.txt
 						mv temp.txt ${temp_f}/original_file_reordered.txt
 					fi
 
@@ -2336,19 +2351,22 @@ do
 		#b. grep the germplasm_id corresponding to the current sample in the final output file, remove added columns
 		#c. compare the two above
 		#Line before 8/1/2018: nb_different=$(sdiff -s <(tail -n+2 ${folder_to_analyze}/${sample_name}_*_properties.csv |perl -pe 's/ //g'|perl -pe 's/,/\t/g'|awk 'BEGIN { FS = OFS = "\t" } { for(i=1; i<=NF; i++) if($i ~ /^ *$/) $i = "\\N" }; 1')  <(grep ${germplasm_id} ${final_files_folder}/${out_ss_file}|cut -f3-17)|wc -l)
+		#echo "avant ligne 2339 /n"
+		#echo "${folder_to_analyze}/${sample_name} /n"
 		nb_different=$(sdiff -s <(tail -n+2 ${folder_to_analyze}/${sample_name}_*_properties.csv |perl -pe 's/ //g'|perl -pe 's/,/\t/g'|awk 'BEGIN { FS = OFS = "\t" } { for(i=1; i<=NF; i++) if($i ~ /^ *$/) $i = "\\N" }; 1') <(awk -F "\t" -v gi=${germplasm_id} '{if ($1 == gi) print}'  ${final_files_folder}/${out_ss_file}|cut -f2-17 -d $'\t')|wc -l)
 		
 		printf "${sample_name}\t${nb_different}\n" >>  ${temp_f}/check_file2.txt
 		if [ ${nb_different} -ne 0 ]; then errors_found=1;fi
 		
-	#3. Verify consistency of ring end between all_samples_ring_info.txt et *_ring_info.csv
-		nb_different=$(perl -pe 's/,/\t/g' ${folder_to_analyze}/${sample_name}*_ring_info.csv |grep -av "${ri_header_identifier}"|cut -f${dataidx_col_no}|diff - <(grep -aE "^${sample_name}\b" ${temp_f}/all_samples_ring_info.txt |cut -f7)|wc -l)
+	#3. Verify consistency of ring end between all_samples_ring_info.txt et _*_ring_info.csv
+	#[NEW 20210720]: added a "_" after "perl -pe 's/,/\t/g' ${folder_to_analyze}/${sample_name}", otherwise would mix: C-293-D_wood_010101_ring_info.csv and C-293-DBH_wood_010103_ring_info.csv
+		nb_different=$(perl -pe 's/,/\t/g' ${folder_to_analyze}/${sample_name}_*_ring_info.csv |grep -av "${ri_header_identifier}"|cut -f${dataidx_col_no}|diff - <(grep -aE "^${sample_name}\b" ${temp_f}/all_samples_ring_info.txt |cut -f7)|wc -l)
 		printf "${sample_name}\t${nb_different}\n" >> ${temp_f}/check_file3.txt
 
 		if [ ${nb_different} -ne 0 ]
 		then
 			errors_found=1
-			perl -pe 's/,/\t/g' ${folder_to_analyze}/${sample_name}*_ring_info.csv |grep -av "${ri_header_identifier}"|cut -f${dataidx_col_no}|paste - <(grep -aE "^${sample_name}\b" ${temp_f}/all_samples_ring_info.txt |cut -f7)|cat <(printf "\n*_ring_info.csv\tall_samples_ring_info.txt\n-----------\t-----------------\n") -|perl -pe 's/^/\t\t/g'  >> ${temp_f}/check_file3.txt
+			perl -pe 's/,/\t/g' ${folder_to_analyze}/${sample_name}_*_ring_info.csv |grep -av "${ri_header_identifier}"|cut -f${dataidx_col_no}|paste - <(grep -aE "^${sample_name}\b" ${temp_f}/all_samples_ring_info.txt |cut -f7)|cat <(printf "\n_*_ring_info.csv\tall_samples_ring_info.txt\n-----------\t-----------------\n") -|perl -pe 's/^/\t\t/g'  >> ${temp_f}/check_file3.txt
 		fi
 
 	#4. Same verification as #1, but by a JOIN instead
@@ -2495,9 +2513,13 @@ cp -r ${req_files_folder} ${final_files_folder}/
 mv ${temp_f}/${err_warn_f} ${final_files_folder}/${err_warn_f}
 mv ${temp_f} ${final_files_folder}/
 
+#ajout� par julia 05/07/2021
+#[NEW 20210720]:
 
-
-
+#echo /dev/shm/uniformize_temp_${ts}
+#exit
+mv /dev/shm/uniformize_temp_${ts} ${final_files_folder}/
+mv /dev/shm/copy_shifted_columns_${ts} ${final_files_folder}/
 
 #End of logging
 } 2>&1|tee ${final_files_folder}/${execution_journal_filename}
