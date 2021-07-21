@@ -2,7 +2,7 @@
 #---------------------------------------------------------------------------------------------------------------------------------------------------
 #Script to regroup data from raw Silviscan files into files for import in TreeSource
 #Sébastien Clément, 6/05/2010
-script_version="2021-07-20"
+script_version="2021-07-21"
 test=0
 
 #------------------------
@@ -287,6 +287,11 @@ test=0
 	
 	#20210720
 	#	Fixed all occurrences of "*_properties.csv" and "*_ring_info.csv" with "_*_properties.csv" and "_*_ring_info.csv" to avoid getting similarly-named samples (e.g. C-293-D_wood_010101_ring_info.csv and C-293-DBH_wood_010101_ring_info.csv) and cause an error.
+	
+	#20210721
+	#	for uniformize_col_no.txt, output file created directly into the temp_f folder, under the same name as input file.
+
+	
 	
 #--------------------------------------------------------------------------------------------------------------------------------------------------
 #TODO:
@@ -1030,9 +1035,10 @@ do
 	
 	#Uniformize column number
 	#[NEw 20210720]: the timestamp ${ts} is passed to uniformize_col_no.txt to be used as a suffix
-	bash ${req_files_folder}/uniformize_col_no.txt ${temp_f}/current_sample_temp_file_A.txt 1 y temp_file.txt y ${ts}
-	mv temp_file.txt ${temp_f}/current_sample_temp_file_A.txt
-
+	#[NEw 20210721]: Output file created directly into the temp_f folder, under the same name as input file.
+	bash ${req_files_folder}/uniformize_col_no.txt ${temp_f}/current_sample_temp_file_A.txt 1 y ${temp_f}/current_sample_temp_file_A.txt y ${ts}
+	
+	
   
 	sample_name_col_no=$(awk -F "\t" '{print NF}' ${temp_f}/current_sample_temp_file_A.txt|sort -un|tail -1)
 	#	DON NOT REMOVE: used around line 1793 to create variables!
@@ -1258,8 +1264,9 @@ do
 
 	#Uniformize column number
 	#[NEw 20210720]: the timestamp ${ts} is passed to uniformize_col_no.txt to be used as a suffix
-	bash ${req_files_folder}/uniformize_col_no.txt ${temp_f}/rinfo_formatted.txt 1 y temp_file.txt y ${ts}
-	mv temp_file.txt ${temp_f}/rinfo_formatted.txt
+	#[NEW 20210721]: output file created directly into the temp_f folder, under the same name as input file.
+	bash ${req_files_folder}/uniformize_col_no.txt ${temp_f}/rinfo_formatted.txt 1 y ${temp_f}/rinfo_formatted.txt y ${ts}
+	#mv temp_file.txt ${temp_f}/rinfo_formatted.txt
 
 	#rinfo_formatted.txt
 	#204     21      1
@@ -2114,8 +2121,9 @@ echo
 #Uniformize the number of columns and fill empty fields with "\N"
 #---------------------------------------------------------------------------------------------------------------------------------------------------
   #[NEw 20210720]: the timestamp ${ts} is passed to uniformize_col_no.txt to be used as a suffix
-  bash ${req_files_folder}/uniformize_col_no.txt ${final_files_folder}/${out_ss_file} 2 y temp_file.txt y ${ts}
-  mv temp_file.txt ${final_files_folder}/${out_ss_file}
+  #[NEw 20210720]: output file created directly into the temp_f folder, under the same name as input file.
+  bash ${req_files_folder}/uniformize_col_no.txt ${final_files_folder}/${out_ss_file} 2 y ${final_files_folder}/${out_ss_file} y ${ts}
+  #mv temp_file.txt ${final_files_folder}/${out_ss_file}
 
 #Add data_source_id
 
